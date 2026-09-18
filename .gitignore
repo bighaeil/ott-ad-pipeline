@@ -1,0 +1,13 @@
+data/fallback/*
+data/checkpoints/*
+data/minio/*
+!data/**/.gitkeep
+collector/build/
+collector/.gradle/
+**/__pycache__/
+*.done
+
+data/recon_after.txt
+data/flink/
+ad-decision/build/
+ad-decision/.gradle/

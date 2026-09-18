@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>이벤트 추적기 — OTT 광고 파이프라인</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#26303d; --fg:#d7dee8; --dim:#7d8899;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#58a6ff; --accent2:#d2a8ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,"D2Coding",monospace}
+  header{padding:12px 18px;border-bottom:1px solid var(--line);display:flex;
+         align-items:baseline;gap:14px;flex-wrap:wrap}
+  header h1{font-size:15px;margin:0}
+  header .sub{color:var(--dim);font-size:11px}
+  header nav{margin-left:auto;display:flex;gap:10px}
+  header nav a{color:var(--dim);text-decoration:none;font-size:11px;
+               border:1px solid var(--line);border-radius:4px;padding:2px 8px}
+  header nav a:hover{color:var(--accent);border-color:var(--accent)}
+  main{display:grid;grid-template-columns:340px 1fr;gap:14px;padding:14px 18px 50px}
+  @media(max-width:900px){main{grid-template-columns:1fr}}
+  h2{font-size:11px;margin:0 0 8px;color:var(--accent);letter-spacing:1.5px;text-transform:uppercase}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+  button.k{display:block;width:100%;text-align:left;margin-bottom:7px;cursor:pointer;
+    background:#11161d;color:var(--fg);border:1px solid var(--line);border-radius:5px;
+    padding:8px 10px;font:inherit;transition:.12s}
+  button.k:hover{border-color:var(--accent);background:#131c27}
+  button.k.on{border-color:var(--accent);background:#132033}
+  button.k b{display:block;font-size:12.5px}
+  button.k span{color:var(--dim);font-size:10.5px}
+  button.k:disabled{opacity:.45;cursor:wait}
+  .lesson{background:#11161d;border-left:3px solid var(--accent2);border-radius:0 4px 4px 0;
+          padding:8px 12px;margin:10px 0 14px;color:#c9d3e0;font-size:12px}
+  .lesson b{color:var(--accent2)}
+  ol.pipe{list-style:none;margin:0;padding:0}
+  ol.pipe li{position:relative;padding:0 0 16px 34px;border-left:2px solid var(--line);
+             margin-left:11px}
+  ol.pipe li:last-child{border-left-color:transparent}
+  ol.pipe li .dot{position:absolute;left:-11px;top:0;width:20px;height:20px;border-radius:50%;
+    background:#11161d;border:2px solid var(--line);display:flex;align-items:center;
+    justify-content:center;font-size:10px;color:var(--dim)}
+  li.done .dot{border-color:var(--ok);color:var(--ok)}
+  li.skip .dot{border-color:var(--dim)}
+  li.wait .dot{border-color:var(--warn);color:var(--warn)}
+  .stage{font-size:12.5px}
+  .stage .name{font-weight:bold}
+  .stage .exp{color:var(--dim);font-size:11px}
+  .stage .res{margin-top:3px;font-size:11.5px}
+  .res.ok{color:var(--ok)} .res.pend{color:var(--warn)} .res.none{color:var(--dim)}
+  .tag{display:inline-block;background:#1b2430;border:1px solid var(--line);border-radius:3px;
+       padding:0 5px;margin-right:5px;font-size:10.5px;color:var(--dim)}
+  code{background:#11161d;padding:1px 5px;border-radius:3px;font-size:11px;color:#a9c7ea}
+  .ids{margin:6px 0 0;font-size:11px;color:var(--dim);word-break:break-all}
+  .empty{color:var(--dim);text-align:center;padding:50px 10px}
+  .empty big{display:block;font-size:15px;color:var(--fg);margin-bottom:6px}
+  .timer{float:right;color:var(--dim);font-size:11px;font-weight:normal}
+  .hint{color:var(--dim);font-size:11px;margin-top:10px;border-top:1px solid var(--line);padding-top:9px}
+</style>
+</head>
+<body>
+<header>
+  <h1>이벤트 추적기</h1>
+  <span class="sub">버튼을 누르면 이벤트 1건을 넣고, 파이프라인 다섯 자리를 1초마다 확인한다</span>
+  <nav>
+    <a href="http://localhost:8088" target="_blank" rel="noopener">관찰 대시보드</a>
+    <a href="http://localhost:8181" target="_blank" rel="noopener">Flink UI</a>
+    <a href="http://localhost:9001" target="_blank" rel="noopener">MinIO</a>
+  </nav>
+</header>
+
+<main>
+  <section class="card">
+    <h2>무엇을 보낼까</h2>
+    <div id="kinds"></div>
+    <div class="hint">
+      클릭할 때마다 <b>전용 캠페인</b>(<code>cmp-tr-…</code>)을 새로 판다.<br>
+      하나를 공유하면 같은 분에 두 번 눌렀을 때 서로의 건수를<br>
+      같이 세어 버려서 비교가 성립하지 않는다.<br><br>
+      부하가 없으면 워터마크가 안 움직여 윈도우가 안 닫힌다.<br>
+      그래서 30초/65초 뒤에 <b>워터마크 밀기</b>가 자동 실행된다<br>
+      (별도 캠페인 <code>cmp-9999</code> 사용).<br><br>
+      마지막 단계(확정 집계)는 배치를 돌려야 채워진다.<br>
+      <code>bash scripts/flush-windows.sh</code><br>
+      <code>bash scripts/batch.sh</code>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>추적 <span class="timer" id="timer"></span></h2>
+    <div id="out">
+      <div class="empty"><big>왼쪽에서 버튼을 하나 누르세요</big>
+        먼저 <code>정상 임프레션</code> 을 눌러 기준선을 보고,<br>
+        그다음 <code>중복</code> 과 <code>SSAI 이중경로</code> 를 눌러 비교해 보세요.</div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let TRACE = null, timer = null;
+
+const STAGES = [
+  {k:'collector', n:'1. Collector 수신',        e:'HTTP 응답 (검증 → 토픽 라우팅)'},
+  {k:'kafka',     n:'2. Kafka 토픽 도착',        e:'어느 토픽/파티션/오프셋에 앉았나'},
+  {k:'redis',     n:'3. Flink → Redis 분단위 집계', e:'중복제거 + 1분 윈도우 → Redis (최대 약 70초)'},
+  {k:'minio',     n:'4. MinIO Parquet 원본',      e:'가공 없는 원본 적재 (최대 약 10초)'},
+  {k:'pg',        n:'5. PostgreSQL 확정 집계',    e:'Spark 배치를 돌려야 나온다'},
+];
+
+async function loadKinds(){
+  const d = await (await fetch('/api/kinds')).json();
+  $('kinds').innerHTML = d.kinds.map(k =>
+    `<button class="k" data-k="${k.id}"><b>${k.title}</b><span>${k.desc}</span></button>`).join('');
+  document.querySelectorAll('button.k').forEach(b =>
+    b.addEventListener('click', () => send(b.dataset.k)));
+}
+
+async function send(kind){
+  document.querySelectorAll('button.k').forEach(b => {
+    b.disabled = true; b.classList.toggle('on', b.dataset.k === kind);
+  });
+  if (timer) clearInterval(timer);
+  $('out').innerHTML = '<div class="empty">전송 중…</div>';
+  try{
+    const r = await (await fetch('/api/send', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({kind})
+    })).json();
+    TRACE = r.trace_id;
+    poll();
+    timer = setInterval(poll, 1000);
+  }catch(e){
+    $('out').innerHTML = '<div class="empty">전송 실패: ' + e + '</div>';
+  }
+  document.querySelectorAll('button.k').forEach(b => b.disabled = false);
+}
+
+async function poll(){
+  if (!TRACE) return;
+  let d;
+  try { d = await (await fetch('/api/trace/' + TRACE)).json(); } catch(e){ return; }
+  if (d.error) return;
+  render(d);
+  if (d.elapsed > 300 && timer) clearInterval(timer);
+}
+
+function stageResult(k, d){
+  if (k === 'collector'){
+    if (!d.http.length) return {cls:'none', html:'응답 없음'};
+    return {cls:'ok', html: d.http.map(h =>
+      `<span class="tag">HTTP ${h.status}</span><code>${esc(h.body).slice(0,180)}</code>`).join('<br>')};
+  }
+  if (k === 'kafka'){
+    if (!d.kafka.length) return {cls:'pend', html:'대기 중…'};
+    return {cls:'ok', html: d.kafka.map(m => {
+      let extra = '';
+      if (m.reason) extra += ` <span class="tag" style="color:var(--bad)">reason=${esc(m.reason)}</span>`;
+      if (m.source) extra += ` <span class="tag">source=${esc(m.source)}</span>`;
+      if (m.lateness_ms != null) extra += ` <span class="tag" style="color:var(--warn)">지각 ${Math.round(m.lateness_ms/1000)}초</span>`;
+      return `<span class="tag">+${m.at}s</span><b>${m.topic}</b> p${m.partition} @${m.offset}${extra}`;
+    }).join('<br>')};
+  }
+  if (k === 'redis'){
+    if (!d.redis) return {cls:'pend', html:'윈도우 마감 대기 중… (1분 윈도우 + 워터마크 10초)'
+      + (d.nudges && d.nudges.length
+          ? `<br><span class="exp">워터마크 밀기 ${d.nudges.length}회 실행 (+${d.nudges.join('s, +')}s)</span>`
+          : '<br><span class="exp">30초 뒤 워터마크 밀기가 자동 실행된다</span>')};
+    const r = d.redis;
+    let s = `<span class="tag">+${r.at}s</span>impressions <b>+${r.impressions}</b>`;
+    if (r.requests) s += `, requests +${r.requests}`;
+    if (r.ssai_dupes) s += `, <span style="color:var(--warn)">ssai_dupes ${r.ssai_dupes}</span>`;
+    s += `<br><span class="exp">${r.key}</span>`;
+    return {cls: 'ok', html: s};
+  }
+  if (k === 'minio'){
+    if (!d.minio) return {cls:'pend', html:'체크포인트(10초) 대기 중… (archive 잡이 안 떠 있으면 계속 대기)'
+      + (d.minio_err ? `<br><span class="exp">${esc(d.minio_err)}</span>` : '')};
+    return {cls:'ok', html:`<span class="tag">+${d.minio.at}s</span><b>${d.minio.rows}행</b>`
+      + `<br><span class="exp">${d.minio.path}</span>`};
+  }
+  if (k === 'pg'){
+    if (!d.pg) return {cls:'none', html:'아직 없음 — <code>bash scripts/batch.sh</code> 를 돌리면 채워진다'};
+    return {cls:'ok', html:`impressions <b>${d.pg.impressions}</b>`
+      + ` (원본 ${d.pg.raw_impressions}), requests ${d.pg.requests}, 정산 ${d.pg.amount.toLocaleString()} KRW`};
+  }
+}
+
+function render(d){
+  const items = STAGES.map(s => {
+    const r = stageResult(s.k, d);
+    const cls = r.cls === 'ok' ? 'done' : (r.cls === 'pend' ? 'wait' : 'skip');
+    const mark = r.cls === 'ok' ? '✓' : (r.cls === 'pend' ? '⋯' : '·');
+    const exp = (d.meta.expect || {})[s.k];
+    return `<li class="${cls}"><div class="dot">${mark}</div>
+      <div class="stage">
+        <div class="name">${s.n} ${exp ? `<span class="exp">— 기대: ${esc(exp)}</span>` : ''}</div>
+        <div class="exp">${s.e}</div>
+        <div class="res ${r.cls}">${r.html}</div>
+      </div></li>`;
+  }).join('');
+
+  $('timer').textContent = '경과 ' + d.elapsed + '초';
+  $('out').innerHTML =
+    `<div class="lesson"><b>${esc(d.meta.title)}</b><br>${esc(d.meta.lesson)}</div>
+     <ol class="pipe">${items}</ol>
+     <div class="ids">추적 대상 —<br>` +
+     d.ids.map(i => `&nbsp;&nbsp;<code>${esc(i.event_id)}</code> ${esc(i.role)}`).join('<br>') +
+     `<br>&nbsp;&nbsp;ad_request_id <code>${esc(d.ad_request_id)}</code>` +
+     `<br>&nbsp;&nbsp;campaign_id <code>${esc(d.campaign_id)}</code> (추적마다 새로 판다 — 다른 클릭과 안 섞이게)</div>`;
+}
+
+function esc(x){ return String(x == null ? '' : x)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+loadKinds();
+</script>
+</body>
+</html>

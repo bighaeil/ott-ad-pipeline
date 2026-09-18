@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STREAMBOX — OTT 플레이어 (데모)</title>
+<style>
+  :root{
+    --bg:#08090c; --panel:#12141a; --panel2:#171a22; --line:#252a35;
+    --fg:#e8ecf3; --dim:#8d97a8; --accent:#e50914; --accent2:#58a6ff;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --ad:#ffc83d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--fg)}
+  body{font:14px/1.5 "Pretendard","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif}
+  button{font:inherit;cursor:pointer}
+  a{color:inherit}
+
+  /* ------------------------------------------------------------ 헤더 */
+  header{display:flex;align-items:center;gap:18px;padding:12px 22px;
+         border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;
+         background:rgba(8,9,12,.92);backdrop-filter:blur(6px)}
+  .brand{font-weight:800;letter-spacing:2px;color:var(--accent);font-size:19px}
+  .brand span{color:var(--fg);letter-spacing:0}
+  .tagline{color:var(--dim);font-size:12px}
+  header nav{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  header nav a{color:var(--dim);text-decoration:none;font-size:12px;
+               border:1px solid var(--line);border-radius:999px;padding:4px 11px}
+  header nav a:hover{color:var(--fg);border-color:var(--accent2)}
+
+  main{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:18px;
+       padding:18px 22px 60px;align-items:start}
+  @media(max-width:1100px){main{grid-template-columns:1fr}}
+
+  h2{font-size:12px;margin:0 0 10px;color:var(--dim);letter-spacing:1.4px;text-transform:uppercase}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .muted{color:var(--dim)}
+  code{font:12px/1.4 ui-monospace,Consolas,monospace;background:#0c0e13;border:1px solid var(--line);
+       border-radius:4px;padding:1px 5px;color:#9dc3ea}
+
+  /* --------------------------------------------------------- 콘텐츠 목록 */
+  .rail{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+  .tile{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel2);
+        text-align:left;padding:0;color:var(--fg);transition:.15s;display:block}
+  .tile:hover{transform:translateY(-3px);border-color:var(--accent2)}
+  .tile .poster{aspect-ratio:16/9;position:relative;display:flex;align-items:flex-end;padding:10px}
+  .tile .poster b{font-size:15px;text-shadow:0 2px 10px rgba(0,0,0,.6)}
+  .tile .meta{padding:9px 11px;font-size:12px;color:var(--dim);display:flex;gap:8px;flex-wrap:wrap}
+  .pill{border:1px solid var(--line);border-radius:999px;padding:1px 8px;font-size:11px;color:var(--dim)}
+  .pill.live{color:#fff;background:var(--accent);border-color:var(--accent)}
+  .pill.ad{color:#1a1200;background:var(--ad);border-color:var(--ad);font-weight:700}
+
+  /* ------------------------------------------------------------- 스테이지 */
+  .stage{position:relative;aspect-ratio:16/9;border-radius:12px;overflow:hidden;
+         border:1px solid var(--line);background:#000}
+  .scene{position:absolute;inset:0}
+  .scene .sweep{position:absolute;inset:-30%;background:
+      radial-gradient(40% 40% at 30% 30%,rgba(255,255,255,.16),transparent 60%);
+      animation:drift 14s ease-in-out infinite alternate}
+  .scene .orb{position:absolute;border-radius:50%;filter:blur(30px);opacity:.42}
+  @keyframes drift{from{transform:translate(-6%,-4%) scale(1)}to{transform:translate(8%,6%) scale(1.18)}}
+  @keyframes float1{from{transform:translate(0,0)}to{transform:translate(60px,-40px)}}
+  @keyframes float2{from{transform:translate(0,0)}to{transform:translate(-70px,50px)}}
+  .vignette{position:absolute;inset:0;background:
+      radial-gradient(120% 90% at 50% 45%,transparent 40%,rgba(0,0,0,.72) 100%)}
+  .scanline{position:absolute;inset:0;opacity:.14;pointer-events:none;
+      background:repeating-linear-gradient(180deg,rgba(255,255,255,.08) 0 1px,transparent 1px 3px)}
+  .stage .topbar{position:absolute;top:0;left:0;right:0;display:flex;gap:10px;align-items:center;
+      padding:14px 16px;font-size:12px;color:#e6ecf5;text-shadow:0 1px 6px rgba(0,0,0,.8)}
+  .stage .title{position:absolute;left:18px;bottom:18px;max-width:70%}
+  .stage .title b{display:block;font-size:26px;letter-spacing:-.3px;
+      text-shadow:0 3px 14px rgba(0,0,0,.8)}
+  .stage .title span{color:#cfd7e3;font-size:13px}
+  .tc{margin-left:auto;font:12px/1 ui-monospace,Consolas,monospace;
+      background:rgba(0,0,0,.45);border-radius:5px;padding:5px 8px}
+  .paused-mark{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+      font-size:52px;color:rgba(255,255,255,.85);text-shadow:0 4px 20px rgba(0,0,0,.8)}
+
+  /* ----------------------------------------------------------- 광고 오버레이 */
+  .adlayer{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;
+           padding:0 44px;gap:10px}
+  .adlayer .adbrand{font-size:13px;letter-spacing:3px;opacity:.85}
+  .adlayer h3{font-size:34px;margin:0;letter-spacing:-.5px;line-height:1.15;max-width:640px}
+  .adlayer p{margin:0;font-size:15px;opacity:.9;max-width:560px}
+  .cta{margin-top:12px;align-self:flex-start;background:#fff;color:#111;border:0;
+       border-radius:8px;padding:11px 20px;font-weight:700}
+  .cta:hover{background:#ffe9e9}
+  .adchrome{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:10px;
+            padding:14px 16px}
+  .adbadge{background:var(--ad);color:#1a1200;font-weight:800;border-radius:4px;
+           padding:3px 9px;font-size:12px;letter-spacing:.5px}
+  .adcount{margin-left:auto;background:rgba(0,0,0,.5);border-radius:6px;padding:6px 10px;font-size:12px}
+  .skip{background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.55);color:#fff;
+        border-radius:6px;padding:6px 12px;font-size:12px}
+  .skip:disabled{opacity:.45;cursor:default}
+  .adbar{position:absolute;left:0;right:0;bottom:0;height:5px;background:rgba(0,0,0,.45)}
+  .adbar i{display:block;height:100%;background:var(--ad);width:0}
+  .adinfo{position:absolute;left:18px;bottom:18px;display:flex;gap:6px;flex-wrap:wrap;max-width:75%}
+  .adinfo span{background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.18);border-radius:5px;
+               padding:3px 8px;font:11px/1.5 ui-monospace,Consolas,monospace}
+  .nofill{position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;
+          align-items:center;justify-content:center;background:#000;color:var(--dim)}
+
+  /* ------------------------------------------------------------- 컨트롤 */
+  .controls{margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .ctrl{background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+        border-radius:8px;padding:8px 13px}
+  .ctrl:hover{border-color:var(--accent2)}
+  .ctrl.primary{background:#fff;color:#111;border-color:#fff;font-weight:700;min-width:46px}
+  .timeline{position:relative;height:26px;margin-top:12px;cursor:pointer}
+  .timeline .track{position:absolute;top:11px;left:0;right:0;height:4px;border-radius:2px;background:#2a303c}
+  .timeline .done{position:absolute;top:11px;left:0;height:4px;border-radius:2px;background:var(--accent)}
+  .timeline .mark{position:absolute;top:7px;width:3px;height:12px;border-radius:1px;background:var(--ad)}
+  .timeline .mark.used{background:#6b5a22}
+  .timeline .knob{position:absolute;top:6px;width:14px;height:14px;border-radius:50%;
+                  background:#fff;transform:translateX(-7px);box-shadow:0 0 0 4px rgba(229,9,20,.25)}
+  .times{display:flex;justify-content:space-between;font:11px/1 ui-monospace,Consolas,monospace;
+         color:var(--dim);margin-top:2px}
+  select{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+         border-radius:8px;padding:8px 10px}
+
+  /* ------------------------------------------------------------- 오른쪽 */
+  .tabs{display:flex;gap:6px;margin-bottom:10px}
+  .tabs button{background:transparent;border:1px solid var(--line);color:var(--dim);
+               border-radius:999px;padding:5px 12px;font-size:12px}
+  .tabs button.on{color:var(--fg);border-color:var(--accent2);background:#141c28}
+  .kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:8px;margin-bottom:12px}
+  .kv div{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+  .kv .l{color:var(--dim);font-size:10.5px}
+  .kv .v{font-size:18px;font-variant-numeric:tabular-nums}
+  .log{max-height:520px;overflow:auto;font:11.5px/1.5 ui-monospace,Consolas,monospace}
+  .row{border-bottom:1px solid #1b2029;padding:6px 2px;display:flex;gap:7px;flex-wrap:wrap;
+       align-items:baseline}
+  .row .t{color:var(--dim)}
+  .row .ty{font-weight:700}
+  .row .tp{color:var(--accent2)}
+  .row .tr{color:var(--dim)}
+  .row .st.ok{color:var(--ok)} .row .st.bad{color:var(--bad)}
+  .row.dlq{background:#2a1416}
+  .row .tag{border:1px solid var(--line);border-radius:3px;padding:0 5px;font-size:10.5px;color:var(--warn)}
+  label.chk{display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-bottom:1px solid #1b2029}
+  label.chk input{margin-top:3px}
+  label.chk b{font-weight:600}
+  label.chk span{display:block;color:var(--dim);font-size:11.5px}
+
+  /* --------------------------------------------------------------- 추적 */
+  ol.pipe{list-style:none;margin:0;padding:0}
+  ol.pipe li{position:relative;padding:0 0 14px 30px;border-left:2px solid var(--line);margin-left:10px}
+  ol.pipe li:last-child{border-left-color:transparent}
+  ol.pipe .dot{position:absolute;left:-11px;top:0;width:20px;height:20px;border-radius:50%;
+    background:#0c0e13;border:2px solid var(--line);display:flex;align-items:center;
+    justify-content:center;font-size:11px;color:var(--dim)}
+  li.done .dot{border-color:var(--ok);color:var(--ok)}
+  li.wait .dot{border-color:var(--warn);color:var(--warn)}
+  .pipe .name{font-size:13px;font-weight:600}
+  .pipe .exp{color:var(--dim);font-size:11.5px}
+  .pipe .res{font:11.5px/1.6 ui-monospace,Consolas,monospace;margin-top:3px}
+  .res.ok{color:var(--ok)} .res.pend{color:var(--warn)} .res.none{color:var(--dim)}
+  .toast{position:fixed;right:22px;bottom:22px;background:#1b2230;border:1px solid var(--accent2);
+         border-radius:8px;padding:10px 14px;font-size:13px;z-index:50;display:none}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">STREAM<span>BOX</span></div>
+  <div class="tagline">광고 기반 무료 스트리밍 (데모) · 화면은 흉내지만 이벤트는 진짜 파이프라인으로 간다</div>
+  <nav>
+    <a href="#/" id="nav-home">홈</a>
+    <a href="http://localhost:8088" target="_blank" rel="noopener">관찰 대시보드</a>
+    <a href="http://localhost:3000" target="_blank" rel="noopener">이벤트 추적기</a>
+    <a href="http://localhost:8181" target="_blank" rel="noopener">Flink UI</a>
+    <a href="http://localhost:9001" target="_blank" rel="noopener">MinIO</a>
+  </nav>
+</header>
+
+<main>
+  <!-- ======================================================= 왼쪽: 화면 -->
+  <div>
+    <!-- 홈 -->
+    <section class="card" id="browse">
+      <h2>지금 볼 수 있는 콘텐츠</h2>
+      <div class="rail" id="tiles"></div>
+
+      <h2 style="margin-top:22px">집행 중인 광고 캠페인 <span class="muted" id="campsrc"></span></h2>
+      <div class="rail" id="camps"></div>
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0">
+        캠페인 목록은 광고 결정 API <code>GET /v1/campaigns</code> 가 준다.
+        재생 중 광고 브레이크에 닿으면 <code>POST /v1/ad-request</code> 로 이 중 하나가 선택되고,
+        그 결정이 화면(어떤 광고인지)과 데이터(어떤 <code>campaign_id</code> 로 쌓이는지)에 동시에 나타난다.
+      </p>
+    </section>
+
+    <!-- 플레이어 -->
+    <section id="playerView" style="display:none">
+      <div class="stage" id="stage"></div>
+
+      <div class="timeline" id="timeline">
+        <div class="track"></div><div class="done" id="tlDone"></div>
+        <div id="tlMarks"></div><div class="knob" id="tlKnob"></div>
+      </div>
+      <div class="times"><span id="tCur">00:00</span><span id="tDur">00:00</span></div>
+
+      <div class="controls">
+        <button class="ctrl primary" id="btnPlay">▶</button>
+        <button class="ctrl" id="btnBreak">다음 광고 브레이크로 ▸▸</button>
+        <select id="speed">
+          <option value="1">배속 1x (실시간)</option>
+          <option value="10">배속 10x</option>
+          <option value="60" selected>배속 60x</option>
+          <option value="180">배속 180x</option>
+        </select>
+        <span class="muted" id="playState"></span>
+        <button class="ctrl" id="btnExit" style="margin-left:auto">◀ 목록으로</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0">
+        콘텐츠는 배속으로 빨리 감아 광고 브레이크에 금방 닿게 한다.
+        <b>광고 구간만 실제 시간으로 재생</b>된다 — 이벤트 간격이 실제와 같아야
+        Flink 윈도우와 워터마크가 의미 있는 값을 만들기 때문이다.
+      </p>
+
+      <!-- 추적 -->
+      <section class="card" style="margin-top:16px">
+        <h2>방금 그 광고, 데이터는 어디까지 갔나</h2>
+        <div class="controls" style="margin:0 0 12px">
+          <select id="adPick"><option>광고를 먼저 재생하세요</option></select>
+          <button class="ctrl" id="btnInspect">데이터 확인</button>
+          <button class="ctrl" id="btnTrackOpen" title="#/track/<ad_request_id> 주소로 새 탭에서 연다 (링크 공유 가능)">단독 화면 ↗ 새 탭</button>
+          <button class="ctrl" id="btnNudge" title="윈도우를 닫기 위해 현재 시각 이벤트를 흘린다">워터마크 밀기</button>
+          <label class="muted" style="font-size:12px"><input type="checkbox" id="autoRefresh" checked> 3초마다 자동 새로고침</label>
+        </div>
+        <div id="inspect"><p class="muted" style="font-size:12.5px">
+          광고가 끝나면 <code>ad_request_id</code> 를 골라 [데이터 확인] 을 누른다.
+          같은 한 건이 Kafka → Redis → MinIO → PostgreSQL 어디까지 도달했는지 보여 준다.</p></div>
+      </section>
+    </section>
+
+    <!-- 추적 단독 화면 (#/track/<ad_request_id>) -->
+    <section id="trackView" style="display:none">
+      <section class="card">
+        <h2>광고 1편 추적 <span class="muted" id="trackTitle"></span></h2>
+        <div class="controls" style="margin:0 0 12px">
+          <a class="ctrl" href="#/" style="text-decoration:none">◀ 홈으로</a>
+          <button class="ctrl" id="btnTrackRefresh">새로고침</button>
+          <button class="ctrl" id="btnNudge2">워터마크 밀기</button>
+          <span class="muted" style="font-size:12px">이 주소는 그대로 공유·북마크할 수 있다</span>
+        </div>
+        <div id="trackBody"><p class="muted">불러오는 중…</p></div>
+      </section>
+    </section>
+  </div>
+
+  <!-- ====================================================== 오른쪽: 관찰 -->
+  <div>
+    <section class="card">
+      <div class="tabs">
+        <button class="on" data-tab="log">이벤트 로그</button>
+        <button data-tab="inject">이상 주입</button>
+        <button data-tab="help">읽는 법</button>
+      </div>
+
+      <div id="tab-log">
+        <div class="kv">
+          <div><div class="l">광고 요청</div><div class="v" id="c_req">0</div></div>
+          <div><div class="l">노필</div><div class="v" id="c_nofill">0</div></div>
+          <div><div class="l">임프레션</div><div class="v" id="c_imp">0</div></div>
+          <div><div class="l">쿼타일</div><div class="v" id="c_q">0</div></div>
+          <div><div class="l">클릭</div><div class="v" id="c_click">0</div></div>
+          <div><div class="l">DLQ 예상</div><div class="v" id="c_dlq">0</div></div>
+        </div>
+        <div class="log" id="log"><p class="muted">아직 없음. 콘텐츠를 재생하면 여기에 쌓인다.</p></div>
+      </div>
+
+      <div id="tab-inject" style="display:none">
+        <p class="muted" style="font-size:12.5px;margin-top:0">
+          실제 서비스에서 일어나는 사고를 이 화면에서 재현한다.
+          켠 뒤 광고를 한 편 더 보면, 같은 이벤트가 파이프라인 뒤쪽에서 어떻게 달라지는지
+          [데이터 확인] 과 대시보드에서 비교할 수 있다.</p>
+        <label class="chk"><input type="checkbox" id="in_pixel" checked>
+          <b>쿼타일을 VAST 픽셀로 전송<span>GET /v1/track (HMAC 서명). 끄면 전부 POST /v1/events 배치로 간다.</span></b></label>
+        <label class="chk"><input type="checkbox" id="in_dup">
+          <b>중복 재전송<span>같은 event_id 로 0.6초 뒤 한 번 더. Kafka 엔 2건, Flink 집계는 +1 (접힘).</span></b></label>
+        <label class="chk"><input type="checkbox" id="in_ssai">
+          <b>SSAI 이중경로<span>같은 광고를 서버 경로로 한 번 더. event_id 가 달라 실시간은 +2 로 부푼다. 배치만 정리한다.</span></b></label>
+        <label class="chk"><input type="checkbox" id="in_late">
+          <b>60초 지연 임프레션<span>워터마크(10초)를 넘겨 도착. 실시간 윈도우는 버리고 late.events 로 간다. 배치는 센다.</span></b></label>
+        <label class="chk"><input type="checkbox" id="in_bad">
+          <b>스키마 위반<span>campaign_id 를 뺀다. Collector 검증에서 걸려 dlq.invalid 로. 응답은 그래도 202.</span></b></label>
+        <label class="chk"><input type="checkbox" id="in_forge">
+          <b>서명 위조 픽셀<span>sig 를 엉뚱하게. HTTP 는 200 + 1x1 GIF 지만 집계에는 한 건도 안 들어간다.</span></b></label>
+      </div>
+
+      <div id="tab-help" style="display:none;font-size:12.5px">
+        <p class="muted" style="margin-top:0;font-size:12.5px">이 화면에서 일어나는 일의 순서다.</p>
+        <ol class="muted" style="font-size:12.5px;padding-left:18px;line-height:1.75">
+          <li>콘텐츠 선택 → <code>session_start</code> / <code>content_start</code> → <code>user.behavior</code></li>
+          <li>30초(콘텐츠 시간)마다 <code>progress</code></li>
+          <li>광고 브레이크 도달 → <code>ad_request</code>(클라이언트가 본 사실) → <code>ad.request</code></li>
+          <li>같은 순간 <code>POST /v1/ad-request</code> → ad-decision 이 소재를 정하고
+              <b>같은 트랜잭션</b>에서 <code>event_outbox</code> 에 <code>ad_response</code> 를 넣는다
+              → Outbox 워커가 <code>ad.request</code> 로 발행</li>
+          <li>광고 재생 → <code>impression</code> → <code>ad.impression</code></li>
+          <li>0/25/50/75/100% 지점에서 <code>quartile</code> → <code>ad.quartile</code></li>
+          <li>CTA 클릭 시 <code>click</code> → <code>ad.click</code></li>
+        </ol>
+        <p class="muted" style="font-size:12.5px">
+          자세한 흐름·스키마·활용은 저장소의 <code>docs/01-event-flow.md</code>,
+          <code>docs/02-data-stores.md</code>, <code>docs/03-ad-decision-api.md</code> 참조.</p>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const hex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)))
+                     .map(b => b.toString(16).padStart(2,'0')).join('');
+const esc = x => String(x==null?'':x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const mmss = s => {
+  s = Math.max(0, Math.floor(s));
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  const p = n => String(n).padStart(2,'0');
+  return (h ? p(h)+':' : '') + p(m)+':'+p(x);
+};
+
+// ───────────────────────────────────────────────────────────────── 상태
+const S = {
+  contents: [], campaigns: [],
+  content: null, playhead: 0, playing: false, speed: 60,
+  sessionId: null, device: 'smart_tv',
+  userId: localStorage.getItem('sbx_user') || ('user-play-' + hex(5)),
+  breaksDone: new Set(), nextPing: 0,
+  ad: null, adCancel: null, recentAds: [],
+  counts: {req:0, nofill:0, imp:0, q:0, click:0, dlq:0},
+  tickTimer: null, inspectTimer: null,
+};
+localStorage.setItem('sbx_user', S.userId);
+
+const inject = () => ({
+  pixel: $('in_pixel').checked, dup: $('in_dup').checked, ssai: $('in_ssai').checked,
+  late: $('in_late').checked, bad: $('in_bad').checked, forge: $('in_forge').checked,
+});
+
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 2600);
+}
+
+// ─────────────────────────────────────────────────────── 이벤트 전송
+// SDK 흉내: 300ms 모아서 한 번에 보낸다. 배치 전송이 실제 플레이어 SDK 의 기본 동작이다.
+let QUEUE = [], flushTimer = null;
+
+function emit(ev, opt){
+  opt = opt || {};
+  ev.event_id = ev.event_id || ('evt-play-' + hex(8));
+  if (ev.event_time == null) ev.event_time = Date.now();
+  ev.user_id = ev.user_id || S.userId;
+  ev.session_id = ev.session_id || S.sessionId;
+  ev.device = ev.device || S.device;
+  if (S.content) ev.content_id = ev.content_id || S.content.content_id;
+  ev.source = ev.source || 'client';
+  QUEUE.push({ev, pixel: !!opt.pixel, forge: !!opt.forge});
+  if (!flushTimer) flushTimer = setTimeout(flush, 300);
+  return ev;
+}
+
+async function flush(){
+  flushTimer = null;
+  if (!QUEUE.length) return;
+  const q = QUEUE; QUEUE = [];
+  const body = {
+    events: q.map(x => x.ev),
+    pixel_ids: q.filter(x => x.pixel && !x.forge).map(x => x.ev.event_id),
+    forge_ids: q.filter(x => x.forge).map(x => x.ev.event_id),
+  };
+  try{
+    const r = await (await fetch('/api/events', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    })).json();
+    (r.results || []).forEach(addLog);
+  }catch(e){
+    addLog({at:new Date().toLocaleTimeString(), event_type:'(전송 실패)', topic:'-',
+            transport:'-', status:0, body:String(e)});
+  }
+}
+
+// ───────────────────────────────────────────────────────────── 로그
+function addLog(row){
+  if (String(row.topic||'').startsWith('dlq')) S.counts.dlq++;
+  const box = $('log');
+  if (box.firstElementChild && box.firstElementChild.tagName === 'P') box.innerHTML = '';
+  const ok = row.status >= 200 && row.status < 300;
+  const div = document.createElement('div');
+  div.className = 'row' + (String(row.topic||'').startsWith('dlq') ? ' dlq' : '');
+  const label = esc(row.event_type) + (row.quartile ? '/' + esc(row.quartile) : '');
+  div.innerHTML =
+    `<span class="t">${esc(row.at||'')}</span>` +
+    `<span class="ty">${label}</span>` +
+    `<span class="tp">→ ${esc(row.topic)}</span>` +
+    `<span class="tr">${esc(row.transport||'')}</span>` +
+    `<span class="st ${ok?'ok':'bad'}">${row.status||0}</span>` +
+    (row.source === 'server' ? '<span class="tag">SSAI 서버경로</span>' : '') +
+    (row.note ? `<span class="tag">${esc(row.note)}</span>` : '') +
+    `<div class="t" style="flex:0 0 100%">${esc(row.event_id||'')}</div>`;
+  box.prepend(div);
+  while (box.children.length > 300) box.lastChild.remove();
+  renderCounts();
+}
+
+function renderCounts(){
+  $('c_req').textContent = S.counts.req;
+  $('c_nofill').textContent = S.counts.nofill;
+  $('c_imp').textContent = S.counts.imp;
+  $('c_q').textContent = S.counts.q;
+  $('c_click').textContent = S.counts.click;
+  $('c_dlq').textContent = S.counts.dlq;
+}
+
+// ────────────────────────────────────────────────────────── 홈 화면
+async function boot(){
+  const d = await (await fetch('/api/bootstrap')).json();
+  S.contents = d.contents; S.campaigns = d.campaigns;
+  $('tiles').innerHTML = d.contents.map((c,i) => `
+    <button class="tile" data-i="${i}">
+      <div class="poster" style="background:linear-gradient(135deg,${c.poster[0]},${c.poster[1]})">
+        <b>${esc(c.title)}</b>
+      </div>
+      <div class="meta">
+        <span class="pill ${c.kind==='live'?'live':''}">${c.kind==='live'?'LIVE':'VOD'}</span>
+        <span class="pill">${esc(c.genre)}</span>
+        <span class="pill">${mmss(c.duration_s)}</span>
+        <span class="pill ad">광고 ${c.ad_breaks.length}회</span>
+      </div>
+    </button>`).join('');
+  document.querySelectorAll('.tile').forEach(b =>
+    b.addEventListener('click', () => go('#/watch/' + S.contents[+b.dataset.i].content_id)));
+
+  $('campsrc').textContent = d.campaigns.length ? `(${d.campaigns.length}개)` : '(ad-decision 응답 없음)';
+  $('camps').innerHTML = d.campaigns.map(c => `
+    <div class="tile" style="cursor:default">
+      <div class="poster" style="background:linear-gradient(135deg,${c.style.colors[0]},${c.style.colors[1]})">
+        <b>${esc(c.advertiser)}</b>
+      </div>
+      <div class="meta" style="display:block">
+        <div style="color:var(--fg);font-size:13px;margin-bottom:4px">${esc(c.name)}</div>
+        <span class="pill">${esc(c.campaignId)}</span>
+        <span class="pill">${esc(c.vertical)}</span>
+        <span class="pill">CPM ${Number(c.cpm||0).toLocaleString()}원</span>
+      </div>
+    </div>`).join('') || '<p class="muted">캠페인을 못 읽었다. ad-decision 컨테이너가 떠 있는지 확인.</p>';
+
+  BOOTED = true;
+  router();          // 주소창에 이미 #/watch/... 가 있으면 바로 그 화면으로 연다
+}
+
+// ────────────────────────────────────────────────────────── 재생 시작
+function open_(c){
+  S.content = c;
+  S.playhead = c.kind === 'live' ? Math.floor(c.duration_s * 0.4) : 0;
+  S.breaksDone = new Set();
+  S.sessionId = 'sess-play-' + hex(6);
+  S.nextPing = Math.ceil((S.playhead + 1) / 30) * 30;
+  $('browse').style.display = 'none';
+  $('playerView').style.display = '';
+  $('tDur').textContent = mmss(c.duration_s);
+  drawMarks();
+
+  emit({event_type:'session_start', campaign_id:'none', playhead_s: Math.round(S.playhead),
+        content_kind: c.kind});
+  emit({event_type:'content_start', campaign_id:'none', playhead_s: Math.round(S.playhead)});
+  setPlaying(true);
+  renderStage();
+  if (!S.tickTimer) S.tickTimer = setInterval(tick, 200);
+}
+
+/** 재생을 끝낸다. 화면 전환은 라우터가 한다. */
+function closeContent(){
+  if (!S.content) return;
+  if (S.adCancel) S.adCancel('exit');
+  setPlaying(false);
+  emit({event_type:'session_end', campaign_id:'none',
+        playhead_s: Math.round(S.playhead), reason:'exit'});
+  flush();
+  S.content = null;
+  S.ad = null;
+  $('stage').innerHTML = '';
+  $('stage').dataset.adId = '';
+}
+
+// ─────────────────────────────────────────────────────────── 라우팅
+// 화면 상태를 주소에 둔다. 뒤로가기·새로고침·링크 공유가 그대로 동작한다.
+//   #/                       홈 (콘텐츠 목록)
+//   #/watch/<content_id>     재생 화면
+//   #/track/<ad_request_id>  광고 1편 추적 (단독 화면)
+let BOOTED = false;
+let ROUTE = {name:'home'};
+
+function parseRoute(){
+  const seg = (location.hash || '#/').replace(/^#\/?/, '').split('/').filter(Boolean);
+  if (seg[0] === 'watch' && seg[1]) return {name:'watch', id: decodeURIComponent(seg[1])};
+  if (seg[0] === 'track' && seg[1]) return {name:'track', id: decodeURIComponent(seg[1])};
+  return {name:'home'};
+}
+
+/** 주소를 바꾼다. 같은 주소면 라우터만 다시 돌린다. */
+function go(hash){
+  if (location.hash === hash) router();
+  else location.hash = hash;
+}
+
+function router(){
+  if (!BOOTED) return;                       // 카탈로그를 받기 전이면 boot() 가 다시 부른다
+  const r = parseRoute();
+  ROUTE = r;
+
+  // 보고 있던 콘텐츠에서 벗어나면 세션을 닫는다 (session_end 가 나간다)
+  if (S.content && !(r.name === 'watch' && r.id === S.content.content_id)) closeContent();
+
+  $('browse').style.display     = r.name === 'home'  ? '' : 'none';
+  $('playerView').style.display = r.name === 'watch' ? '' : 'none';
+  $('trackView').style.display  = r.name === 'track' ? '' : 'none';
+
+  if (r.name === 'watch'){
+    const c = S.contents.find(x => x.content_id === r.id);
+    if (!c){ toast('모르는 콘텐츠: ' + r.id); go('#/'); return; }
+    if (!S.content) open_(c);
+    document.title = c.title + ' — STREAMBOX';
+  } else if (r.name === 'track'){
+    $('trackTitle').textContent = r.id;
+    document.title = '추적 ' + r.id + ' — STREAMBOX';
+    doInspect(r.id, 'trackBody');
+  } else {
+    document.title = 'STREAMBOX — OTT 플레이어 (데모)';
+  }
+}
+
+window.addEventListener('hashchange', router);
+
+function setPlaying(on){
+  S.playing = on;
+  $('btnPlay').textContent = on ? '❚❚' : '▶';
+  $('playState').textContent = S.ad ? '광고 재생 중 (콘텐츠 일시정지)' : (on ? '재생 중' : '일시정지');
+}
+
+// ───────────────────────────────────────────────────── 재생 루프 (200ms)
+function tick(){
+  if (!S.content) return;
+  if (S.playing && !S.ad){
+    const dt = 0.2 * S.speed;                 // 실제 0.2초 = 콘텐츠 dt 초
+    const prev = S.playhead;
+    S.playhead = Math.min(S.content.duration_s, S.playhead + dt);
+
+    // 30초(콘텐츠 시간)마다 progress ping
+    while (S.playhead >= S.nextPing){
+      emit({event_type:'progress', campaign_id:'none', playhead_s: S.nextPing});
+      S.nextPing += 30;
+    }
+    // 광고 브레이크 통과 판정
+    const hit = S.content.ad_breaks.find(b => !S.breaksDone.has(b) && prev <= b && S.playhead >= b);
+    if (hit !== undefined){ S.breaksDone.add(hit); runBreak(hit); }
+
+    if (S.playhead >= S.content.duration_s){
+      emit({event_type:'content_end', campaign_id:'none', playhead_s: S.content.duration_s});
+      emit({event_type:'session_end', campaign_id:'none', reason:'completed'});
+      setPlaying(false);
+    }
+  }
+  renderTimeline();
+  if (!S.ad) renderStage();
+}
+
+// ─────────────────────────────────────────────────────── 광고 브레이크
+async function runBreak(at){
+  const podId = 'pod-play-' + hex(5);
+  const podSize = Math.random() < 0.45 ? 2 : 1;
+  setPlaying(false);
+  for (let slot = 0; slot < podSize; slot++){
+    await runAd(podId, slot, podSize, at);
+    if (!S.content) return;
+  }
+  S.ad = null;
+  setPlaying(true);
+  renderStage();
+}
+
+async function runAd(podId, slot, podSize, playhead){
+  const inj = inject();
+  const arid = 'req-play-' + hex(6);
+
+  // 1) 클라이언트가 본 사실. 아직 어느 캠페인인지 모르므로 campaign_id 는 'pending'.
+  S.counts.req++;
+  emit({event_type:'ad_request', campaign_id:'pending', ad_request_id:arid,
+        ad_pod_id:podId, ad_slot:slot, playhead_s: Math.round(playhead)});
+
+  // 2) 서버 결정 (ad-decision). 응답은 Outbox 를 통해 ad.request 토픽으로도 들어간다.
+  S.ad = {loading:true, slot, podSize};
+  renderStage();
+  let d;
+  try{
+    d = await (await fetch('/api/ad-request', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ad_request_id:arid, session_id:S.sessionId, user_id:S.userId,
+        content_id:S.content.content_id, device:S.device, ad_pod_id:podId, ad_slot:slot,
+        playhead_s: Math.round(playhead), max_duration_s:30})
+    })).json();
+  }catch(e){ d = {error:String(e)}; }
+
+  if (d.error || !d.fill){
+    S.counts.nofill++;
+    S.ad = {nofill:true, reason: d.no_fill_reason || d.error || 'unknown', slot, podSize};
+    renderStage();
+    addLog({at:new Date().toLocaleTimeString(), event_type:'ad_response (noFill)',
+            topic:'ad.request (Outbox)', transport:'server', status:200,
+            event_id:arid, note:'fill=false · ' + (d.no_fill_reason || d.error || '')});
+    await sleep(1500);
+    return;
+  }
+
+  addLog({at:new Date().toLocaleTimeString(), event_type:'ad_response',
+          topic:'ad.request (Outbox 워커 경유)', transport:'server (DB 트랜잭션)', status:200,
+          event_id: arid,
+          note: `${d.advertiser} / ${d.campaign_id} / ${d.creative_id} · 결정 ${d.decision_ms}ms`});
+
+  const dur = d.ad_duration_s || 15;
+  const common = {campaign_id:d.campaign_id, ad_request_id:arid, creative_id:d.creative_id,
+                  ad_pod_id:podId, ad_slot:slot, ad_duration_s:dur, playhead_s:Math.round(playhead)};
+
+  S.recentAds.unshift({arid, label:`${d.advertiser} ${d.campaign_id} · ${new Date().toLocaleTimeString()}`});
+  S.recentAds = S.recentAds.slice(0, 12);
+  renderAdPicker();
+
+  // 3) 임프레션 (+ 이상 주입)
+  const imp = {event_type:'impression', ...common};
+  if (inj.late) imp.event_time = Date.now() - 60000;   // 워터마크를 넘긴 지각 이벤트
+  if (inj.bad) delete imp.campaign_id;                 // 스키마 위반 -> dlq.invalid
+  const sent = emit(imp);
+  S.counts.imp++;
+  if (inj.dup) setTimeout(() => emit({...sent}), 600); // 같은 event_id 재전송
+  if (inj.ssai) emit({...common, event_type:'impression', source:'server',
+                      ssai_twin_of: sent.event_id});   // event_id 가 다른 쌍둥이
+
+  // 4) 광고 재생 + 쿼타일
+  S.ad = {...d, arid, dur, slot, podSize, started: performance.now(), skipped:false,
+          clicked:false, common, inj};
+  renderStage();
+  await playAd(S.ad);
+}
+
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+/** 광고 1편을 실제 시간으로 재생하면서 0/25/50/75/100% 에 비콘을 쏜다. */
+function playAd(ad){
+  const marks = [['start',0],['first_quartile',.25],['midpoint',.5],
+                 ['third_quartile',.75],['complete',1]];
+  let idx = 0;
+  return new Promise(resolve => {
+    S.adCancel = (why) => { clearInterval(h); S.adCancel = null; resolve(why); };
+    const h = setInterval(() => {
+      const el = (performance.now() - ad.started) / 1000;
+      ad.elapsed = el;
+      while (idx < marks.length && el >= marks[idx][1] * ad.dur){
+        const [name] = marks[idx++];
+        // 픽셀 경로 사용 여부 / 위조는 마지막 비콘에만 적용해 비교하기 쉽게 한다.
+        const usePixel = ad.inj.pixel;
+        const forge = ad.inj.forge && name === 'complete';
+        emit({event_type:'quartile', quartile:name, ...ad.common}, {pixel:usePixel, forge});
+        S.counts.q++;
+      }
+      renderStage();
+      if (el >= ad.dur) S.adCancel && S.adCancel('complete');
+    }, 100);
+  });
+}
+
+function skipAd(){
+  if (!S.ad || !S.ad.arid) return;
+  S.ad.skipped = true;
+  toast('광고를 건너뛰었다 — 남은 quartile 비콘은 발생하지 않는다');
+  S.adCancel && S.adCancel('skip');
+}
+
+function clickAd(){
+  if (!S.ad || !S.ad.arid || S.ad.clicked) return;
+  S.ad.clicked = true;
+  S.counts.click++;
+  emit({event_type:'click', ...S.ad.common});
+  toast('클릭 이벤트 전송 → ad.click');
+}
+
+// ──────────────────────────────────────────────────────────── 렌더
+/** 광고 화면을 한 번만 만든다. 리스너도 여기서 한 번만 붙는다. */
+function mountAd(ad){
+  const st = $('stage');
+  const [c1, c2] = ad.style.colors;
+  st.innerHTML = `
+    <div class="scene" style="background:linear-gradient(120deg,${c1},${c2})">
+      <div class="sweep"></div>
+    </div>
+    <div class="adlayer">
+      <div class="adbrand">${esc(ad.advertiser || '')}</div>
+      <h3>${esc(ad.campaign_name || '')}</h3>
+      <p>${esc(ad.style.tagline)}</p>
+      <button class="cta" id="adCta">자세히 보기</button>
+    </div>
+    <div class="adchrome">
+      <span class="adbadge">광고 ${ad.slot + 1}/${ad.podSize}</span>
+      <span style="font-size:12px;opacity:.85" id="adLeft"></span>
+      <span class="adcount"><button class="skip" id="adSkip" disabled></button></span>
+    </div>
+    <div class="adinfo">
+      <span>campaign_id ${esc(ad.campaign_id)}</span>
+      <span>creative_id ${esc(ad.creative_id)}</span>
+      <span>${esc(ad.vertical)}</span>
+      <span>CPM ${Number(ad.cpm||0).toLocaleString()}원</span>
+      <span>결정 ${ad.decision_ms}ms (왕복 ${ad.rtt_ms}ms)</span>
+      <span>ad_request_id ${esc(ad.arid)}</span>
+    </div>
+    <div class="adbar"><i id="adProg"></i></div>`;
+  st.dataset.adId = ad.arid;
+  $('adSkip').addEventListener('click', skipAd);
+  $('adCta').addEventListener('click', clickAd);
+  updateAd(ad);
+}
+
+/** 카운트다운·진행바·건너뛰기 상태만 갱신한다. DOM 을 교체하지 않는다. */
+function updateAd(ad){
+  const el = Math.min(ad.elapsed || 0, ad.dur);
+  const left = Math.max(0, Math.ceil(ad.dur - el));
+  const canSkip = ad.skippable_after_s != null && el >= ad.skippable_after_s;
+  const leftEl = $('adLeft'), skip = $('adSkip'), prog = $('adProg');
+  if (!leftEl || !skip || !prog) return mountAd(ad);
+  leftEl.textContent = left + '초 후 콘텐츠가 이어집니다';
+  prog.style.width = (el / ad.dur * 100).toFixed(1) + '%';
+  const label = canSkip ? '광고 건너뛰기 ▸'
+    : Math.max(0, Math.ceil((ad.skippable_after_s || 0) - el)) + '초 후 건너뛰기';
+  if (skip.textContent !== label) skip.textContent = label;
+  if (skip.disabled === canSkip) skip.disabled = !canSkip;
+}
+
+function renderStage(){
+  const st = $('stage');
+  const c = S.content;
+  if (!c){ st.innerHTML = ''; st.dataset.adId = ''; return; }
+  const ad = S.ad;
+
+  if (!(ad && ad.arid)) st.dataset.adId = '';
+
+  if (ad && ad.loading){
+    st.innerHTML = `<div class="nofill"><div>광고 불러오는 중…</div>
+      <div style="font-size:12px">POST /v1/ad-request</div></div>`;
+    return;
+  }
+  if (ad && ad.nofill){
+    st.innerHTML = `<div class="nofill"><div style="color:#e8ecf3">광고 없음 (no fill)</div>
+      <div style="font-size:12px">사유: ${esc(ad.reason)} — 이 슬롯은 impression 이하가 발생하지 않는다</div></div>`;
+    return;
+  }
+  if (ad && ad.arid){
+    // 광고 화면은 100ms 마다 갱신되지만 DOM 을 다시 그리지 않는다.
+    // innerHTML 을 통째로 갈아 끼우면 mousedown 과 mouseup 사이에 버튼이 교체되어
+    // click 이벤트가 성립하지 않는다 (건너뛰기/CTA 가 안 눌리던 원인).
+    // 그래서 한 번만 mount 하고 숫자만 update 한다.
+    if (st.dataset.adId === ad.arid) updateAd(ad);
+    else mountAd(ad);
+    return;
+  }
+
+  // 콘텐츠 화면 (동영상 대신 그린 장면)
+  const [p1, p2] = c.poster;
+  st.innerHTML = `
+    <div class="scene" style="background:linear-gradient(160deg,${p1},${p2})">
+      <div class="orb" style="width:38%;height:52%;left:8%;top:14%;background:${p2};
+           animation:float1 11s ease-in-out infinite alternate"></div>
+      <div class="orb" style="width:44%;height:58%;right:6%;bottom:8%;background:${p1};
+           animation:float2 13s ease-in-out infinite alternate"></div>
+      <div class="sweep"></div>
+    </div>
+    <div class="vignette"></div><div class="scanline"></div>
+    <div class="topbar">
+      <span class="pill ${c.kind==='live'?'live':''}">${c.kind==='live'?'● LIVE':'VOD'}</span>
+      <span class="pill">${esc(c.rating)}</span>
+      <span class="pill">${esc(c.genre)}</span>
+      <span class="tc">${mmss(S.playhead)} / ${mmss(c.duration_s)} · ${S.speed}x</span>
+    </div>
+    <div class="title"><b>${esc(c.title)}</b><span>${esc(c.subtitle)} — ${esc(c.synopsis)}</span></div>
+    ${S.playing ? '' : '<div class="paused-mark">❚❚</div>'}`;
+}
+
+function drawMarks(){
+  const c = S.content;
+  $('tlMarks').innerHTML = c.ad_breaks.map(b =>
+    `<div class="mark" data-b="${b}" style="left:${(b / c.duration_s * 100).toFixed(2)}%"></div>`).join('');
+}
+
+function renderTimeline(){
+  const c = S.content; if (!c) return;
+  const pct = S.playhead / c.duration_s * 100;
+  $('tlDone').style.width = pct + '%';
+  $('tlKnob').style.left = pct + '%';
+  $('tCur').textContent = mmss(S.playhead);
+  document.querySelectorAll('.mark').forEach(m =>
+    m.classList.toggle('used', S.breaksDone.has(+m.dataset.b)));
+}
+
+function renderAdPicker(){
+  $('adPick').innerHTML = S.recentAds.map(a =>
+    `<option value="${a.arid}">${esc(a.label)}</option>`).join('')
+    || '<option>광고를 먼저 재생하세요</option>';
+}
+
+// ───────────────────────────────────────────────────────── 데이터 확인
+const STAGES = [
+  {k:'sent',  n:'1. 플레이어 → Collector', e:'HTTP 202 / 픽셀 200 (검증 → 토픽 라우팅)'},
+  {k:'kafka', n:'2. Kafka 토픽',           e:'어느 토픽 / 파티션 / 오프셋에 앉았나'},
+  {k:'redis', n:'3. Flink → Redis 분집계', e:'중복제거 + 1분 윈도우 (최대 약 70초)'},
+  {k:'minio', n:'4. MinIO Parquet 원본',   e:'가공 없는 원본 (체크포인트 10초마다 파일 확정)'},
+  {k:'pg',    n:'5. PostgreSQL',           e:'Outbox 행 + Spark 배치 확정 집계'},
+];
+
+let inspectBusy = false;
+
+async function doInspect(arid, targetId){
+  arid = arid || $('adPick').value;
+  targetId = targetId || 'inspect';
+  if (!arid || arid.indexOf('req-') !== 0) return;
+  // 서버의 Kafka 스캔이 1~2초 걸린다. 앞의 요청이 안 끝났으면 건너뛴다
+  // (안 그러면 2초 간격 자동 새로고침이 큐에 쌓인다).
+  if (inspectBusy) return;
+  inspectBusy = true;
+  let d;
+  try{ d = await (await fetch('/api/inspect/' + arid)).json(); }
+  catch(e){ return; }
+  finally{ inspectBusy = false; }
+  if (d.error){ $(targetId).innerHTML = `<p class="muted">${esc(d.error)}</p>`; return; }
+
+  const cell = k => {
+    if (k === 'sent'){
+      if (!d.sent.length) return {c:'none', h:'없음'};
+      return {c:'ok', h: d.sent.map(s =>
+        `${esc(s.type)}${s.quartile ? '/' + esc(s.quartile) : ''} <span class="exp">${esc(s.event_id)}</span>`
+        + (s.source === 'server' ? ' <b style="color:var(--warn)">[SSAI 서버경로]</b>' : '')).join('<br>')};
+    }
+    if (k === 'kafka'){
+      if (!d.kafka.length) return {c:'pend', h:'대기 중…'};
+      return {c:'ok', h: d.kafka.map(m =>
+        `+${m.at}s <b>${esc(m.topic)}</b> p${m.partition} @${m.offset} ${esc(m.event_type||'')}`
+        + (m.reason ? ` <b style="color:var(--bad)">reason=${esc(m.reason)}</b>` : '')
+        + (m.lateness_ms != null ? ` <b style="color:var(--warn)">지각 ${Math.round(m.lateness_ms/1000)}초</b>` : '')
+      ).join('<br>')};
+    }
+    if (k === 'redis'){
+      if (!d.redis) return {c:'pend', h: esc(d.redis_hint || '대기 중…')};
+      const r = d.redis;
+      return {c:'ok', h:`impressions <b>+${r.impressions}</b>, requests +${r.requests}, `
+        + `completes +${r.completes}, clicks +${r.clicks}`
+        + (r.ssai_dupes ? `, <b style="color:var(--warn)">ssai_dupes ${r.ssai_dupes}</b>` : '')
+        + `<br><span class="exp">${esc(r.key)}</span>`};
+    }
+    if (k === 'minio'){
+      if (!d.minio) return {c:'pend', h:'체크포인트(10초) 대기 중… (archive 잡이 안 떠 있으면 계속 대기)'
+        + (d.minio_err ? `<br><span class="exp">${esc(d.minio_err)}</span>` : '')};
+      return {c:'ok', h:`<b>${d.minio.rows}행</b> — ${esc(d.minio.types.join(', '))}`
+        + `<br><span class="exp">${esc(d.minio.path)}</span>`};
+    }
+    const pg = d.postgres || {};
+    let h = '';
+    if (pg.outbox) h += pg.outbox.map(o =>
+      `event_outbox #${o.id} published=<b>${o.published}</b> ${esc(o.event_id)}`).join('<br>');
+    else h += '<span class="exp">outbox 행 없음</span>';
+    if (pg.settlement) h += `<br>daily_settlement: imp <b>${pg.settlement.impressions}</b>`
+      + ` (원본 ${pg.settlement.raw_impressions}), req ${pg.settlement.requests},`
+      + ` 정산 ${pg.settlement.amount.toLocaleString()} KRW`;
+    else h += `<br><span class="exp">${esc(d.pg_hint || '')}</span>`;
+    return {c: pg.outbox ? 'ok' : 'none', h};
+  };
+
+  $(targetId).innerHTML = `<ol class="pipe">` + STAGES.map(s => {
+    const r = cell(s.k);
+    const cls = r.c === 'ok' ? 'done' : (r.c === 'pend' ? 'wait' : '');
+    const mark = r.c === 'ok' ? '✓' : (r.c === 'pend' ? '⋯' : '·');
+    return `<li class="${cls}"><div class="dot">${mark}</div>
+      <div class="name">${s.n}</div><div class="exp">${s.e}</div>
+      <div class="res ${r.c}">${r.h}</div></li>`;
+  }).join('') + `</ol>
+    <p class="muted" style="font-size:11.5px;margin:6px 0 0">
+      경과 ${d.elapsed}초 · campaign_id <code>${esc(d.campaign_id||'-')}</code> ·
+      ad_request_id <code>${esc(d.ad_request_id)}</code></p>`;
+}
+
+// ──────────────────────────────────────────────────────────── 바인딩
+$('btnPlay').addEventListener('click', () => {
+  if (S.ad) return;
+  setPlaying(!S.playing);
+  emit({event_type: S.playing ? 'resume' : 'pause', campaign_id:'none',
+        playhead_s: Math.round(S.playhead)});
+  renderStage();
+});
+$('btnBreak').addEventListener('click', () => {
+  if (!S.content || S.ad) return;
+  const next = S.content.ad_breaks.find(b => b > S.playhead && !S.breaksDone.has(b));
+  if (next === undefined){ toast('남은 광고 브레이크가 없다'); return; }
+  emit({event_type:'seek', campaign_id:'none', playhead_s: Math.round(next),
+        from_s: Math.round(S.playhead)});
+  S.playhead = Math.max(0, next - 1);
+  S.nextPing = Math.ceil((S.playhead + 1) / 30) * 30;
+  setPlaying(true);
+});
+$('btnExit').addEventListener('click', () => go('#/'));
+$('speed').addEventListener('change', e => { S.speed = +e.target.value; renderStage(); });
+$('timeline').addEventListener('click', e => {
+  if (!S.content || S.ad) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const to = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * S.content.duration_s;
+  emit({event_type:'seek', campaign_id:'none', playhead_s: Math.round(to),
+        from_s: Math.round(S.playhead)});
+  S.playhead = to;
+  S.nextPing = Math.ceil((to + 1) / 30) * 30;
+  renderTimeline();
+});
+$('btnInspect').addEventListener('click', () => doInspect());
+$('btnTrackOpen').addEventListener('click', () => {
+  const arid = $('adPick').value;
+  if (!arid || arid.indexOf('req-') !== 0) return;
+  // 새 탭으로 연다. 같은 탭에서 라우트를 바꾸면 보던 세션이 끝나 버린다(session_end).
+  window.open('#/track/' + arid, '_blank');
+});
+$('btnTrackRefresh').addEventListener('click', () => doInspect(ROUTE.id, 'trackBody'));
+async function nudge(){
+  await fetch('/api/nudge', {method:'POST'});
+  toast('현재 시각 이벤트 3건 전송 — 워터마크가 앞으로 밀린다');
+}
+$('btnNudge').addEventListener('click', nudge);
+$('btnNudge2').addEventListener('click', nudge);
+document.querySelectorAll('.tabs button').forEach(b =>
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+    ['log','inject','help'].forEach(t =>
+      $('tab-' + t).style.display = (t === b.dataset.tab) ? '' : 'none');
+  }));
+
+setInterval(() => {
+  if (ROUTE.name === 'track') doInspect(ROUTE.id, 'trackBody');
+  else if (ROUTE.name === 'watch' && $('autoRefresh').checked && S.recentAds.length) doInspect();
+}, 3000);
+window.addEventListener('beforeunload', () => { if (S.content) flush(); });
+
+boot();
+</script>
+</body>
+</html>

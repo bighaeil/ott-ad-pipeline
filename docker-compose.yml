@@ -1,0 +1,532 @@
+# ===========================================================================
+# OTT 광고 이벤트 수집/집계 파이프라인 - 로컬 단일 Compose
+#
+# 로컬 축소 <-> 실제 운영 대비표
+#   Kafka broker      1대                 <-> 3~5대 (RF=3)
+#   partitions        6                   <-> 48
+#   Flink task slots  2                   <-> 20 (TM 5대 x 4슬롯)
+#   Spark             on-demand 1컨테이너 <-> EMR / K8s executor 다수
+#   MinIO             single drive        <-> S3
+# 이미지는 전부 태그 고정. latest 금지.
+#
+# [버전 메모] minio/minio, minio/mc 는 Docker Hub 에서 저장소 자체가 제거되었다.
+#            요청받은 RELEASE.2024-09-13T20-26-02Z 는 quay.io 에 그대로 존재하므로
+#            버전은 올리지 않고 레지스트리만 quay.io 로 지정한다.
+# ===========================================================================
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # ------------------------------------------------------------------ Kafka
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: ottads-kafka
+    hostname: kafka
+    # named volume 은 root 소유로 생성되어 이미지의 appuser(uid 1000)가 쓰지 못한다.
+    # 로컬 한정 편의를 위해 root 로 기동. 운영에서는 금지.
+    user: "0:0"
+    ports:
+      - "29092:29092"   # 호스트용. 컨테이너끼리는 kafka:9092
+    environment:
+      CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # host 를 비워 둔다(0.0.0.0 로 쓰지 않는다).
+      # Kafka 3.9 는 KRaft 컨트롤러의 광고 주소를 listeners 에서 파생시키는데,
+      # CONTROLLER://0.0.0.0:9093 이면 "advertised.listeners cannot use the
+      # nonroutable meta-address 0.0.0.0" 로 기동에 실패한다.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1          # 운영: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1  # 운영: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1             # 운영: 2
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_HEAP_OPTS: -Xmx768m -Xms256m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+    mem_limit: 1200m
+    logging: *default-logging
+
+  # 토픽 생성 후 종료되는 1회성 컨테이너
+  kafka-init:
+    image: apache/kafka:3.9.0
+    container_name: ottads-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      PARTITIONS: ${KAFKA_PARTITIONS:-6}        # 운영: 48
+      REPLICATION: ${KAFKA_REPLICATION:-1}      # 운영: 3
+      RETENTION_MS: ${KAFKA_RETENTION_MS:-86400000}
+    entrypoint: ["/bin/bash", "/init/create-topics.sh"]
+    volumes:
+      - ./kafka/create-topics.sh:/init/create-topics.sh:ro
+    restart: "no"
+    logging: *default-logging
+
+  # ------------------------------------------------------------------ Redis
+  redis:
+    image: redis:7-alpine
+    container_name: ottads-redis
+    command:
+      - redis-server
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+      - --maxmemory
+      - 192mb
+      - --maxmemory-policy
+      - volatile-ttl
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 256m
+    logging: *default-logging
+
+  # --------------------------------------------------------------- Postgres
+  postgres:
+    image: postgres:16-alpine
+    container_name: ottads-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-adplatform}
+      POSTGRES_USER: ${POSTGRES_USER:-ads}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ads}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ads} -d ${POSTGRES_DB:-adplatform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    mem_limit: 512m
+    logging: *default-logging
+
+  # ------------------------------------------------------------------ MinIO
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-09-13T20-26-02Z
+    container_name: ottads-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # 웹 콘솔
+    volumes:
+      - ./data/minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    mem_limit: 512m
+    logging: *default-logging
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2024-09-16T17-43-14Z
+    container_name: ottads-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MC_HOST_local: http://${MINIO_ROOT_USER:-minioadmin}:${MINIO_ROOT_PASSWORD:-minioadmin}@minio:9000
+      BUCKET: ${MINIO_BUCKET:-events}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mc mb --ignore-existing local/$${BUCKET} && mc ls local && echo \"[minio-init] bucket $${BUCKET} ready\""]
+    restart: "no"
+    logging: *default-logging
+
+  # ------------------------------------------------------------------ Flink
+  jobmanager:
+    build:
+      context: ./flink
+      dockerfile: Dockerfile
+    image: ottads/flink:1.20-0.1.0
+    container_name: ottads-flink-jm
+    ports:
+      # 호스트 8181 -> 컨테이너 8081.
+      # collector 를 스케일 아웃하면 호스트 8080-8085 를 쓰므로 8081 을 비워 둔다.
+      - "8181:8081"
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 1024m
+        # 상태는 메모리(hashmap), 체크포인트는 파일시스템(/data/checkpoints).
+        # 중복제거 상태 TTL 1시간이라 초당 2000건을 오래 돌리면 힙이 부족해질 수 있다.
+        # 그때는 FLINK_STATE_BACKEND=rocksdb 로 바꾼다 (디스크 기반, 지연은 늘어남).
+        state.backend.type: ${FLINK_STATE_BACKEND:-hashmap}
+        state.checkpoint-storage: filesystem
+        state.checkpoints.dir: file:///data/checkpoints
+        state.checkpoints.num-retained: 3
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.min-pause: 5s
+        execution.checkpointing.timeout: 60s
+        rest.flamegraph.enabled: true
+        # TaskManager 사망 감지 시간. 기본 50초는 로컬 시나리오에서 너무 길다.
+        # 15초로 줄여 kill 후 잡 상태 전이를 눈으로 볼 수 있게 한다. (운영 기본 50초)
+        heartbeat.interval: 3000
+        heartbeat.timeout: 15000
+        # MinIO(S3) 접속. s3.* 키는 flink-s3-fs-hadoop 플러그인이 fs.s3a.* 로 옮겨 준다.
+        s3.endpoint: http://minio:9000
+        s3.path.style.access: true
+        s3.access-key: ${MINIO_ROOT_USER:-minioadmin}
+        s3.secret-key: ${MINIO_ROOT_PASSWORD:-minioadmin}
+        fs.s3a.connection.ssl.enabled: false
+        fs.s3a.change.detection.mode: none
+        fs.s3a.change.detection.version.required: false
+    volumes:
+      - ./data:/data
+      - ./sql:/opt/sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/overview > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    mem_limit: 1200m
+    logging: *default-logging
+
+  taskmanager:
+    build:
+      context: ./flink
+      dockerfile: Dockerfile
+    image: ottads/flink:1.20-0.1.0
+    container_name: ottads-flink-tm
+    depends_on:
+      jobmanager:
+        condition: service_started
+    command: taskmanager
+    environment:
+      # 로컬 2슬롯 / 운영 20슬롯 (TM 5대 x 4)
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: ${FLINK_TASK_SLOTS:-2}
+        taskmanager.memory.process.size: 1536m
+        state.backend.type: ${FLINK_STATE_BACKEND:-hashmap}
+        state.checkpoint-storage: filesystem
+        state.checkpoints.dir: file:///data/checkpoints
+        # TaskManager 사망 감지 시간. 기본 50초는 로컬 시나리오에서 너무 길다.
+        # 15초로 줄여 kill 후 잡 상태 전이를 눈으로 볼 수 있게 한다. (운영 기본 50초)
+        heartbeat.interval: 3000
+        heartbeat.timeout: 15000
+        # MinIO(S3) 접속. s3.* 키는 flink-s3-fs-hadoop 플러그인이 fs.s3a.* 로 옮겨 준다.
+        s3.endpoint: http://minio:9000
+        s3.path.style.access: true
+        s3.access-key: ${MINIO_ROOT_USER:-minioadmin}
+        s3.secret-key: ${MINIO_ROOT_PASSWORD:-minioadmin}
+        fs.s3a.connection.ssl.enabled: false
+        fs.s3a.change.detection.mode: none
+        fs.s3a.change.detection.version.required: false
+    volumes:
+      - ./data:/data
+    mem_limit: 1700m
+    logging: *default-logging
+
+  # -------------------------------------------------------------- Collector
+  collector:
+    build:
+      context: ./collector
+      dockerfile: Dockerfile
+    image: ottads/collector:0.1.0
+    # container_name 을 두지 않는다. 두면 --scale 이 불가능하다.
+    # 시나리오 scripts/scenario_live.sh 가 수동 스케일 아웃을 한다 (HPA 대용).
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      # 평소에는 8080 고정. 문서와 스크립트가 전부 이 주소를 쓴다.
+      # 스케일 아웃은 docker-compose.scale.yml 오버레이로만 한다
+      # (포트 범위를 기본값으로 두면 compose 가 8083 같은 임의 포트를 잡아
+      #  진입점이 매번 달라진다).
+      - "${COLLECTOR_PORT:-8080}:8080"
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      COLLECTOR_HMAC_SECRET: ${COLLECTOR_HMAC_SECRET:-local-dev-secret}
+      COLLECTOR_FALLBACK_DIR: /data/fallback
+      COLLECTOR_KAFKA_MAX_BLOCK_MS: ${COLLECTOR_KAFKA_MAX_BLOCK_MS:-2000}
+      COLLECTOR_PUBLISH_TIMEOUT_MS: ${COLLECTOR_PUBLISH_TIMEOUT_MS:-3000}
+      JAVA_OPTS: -Xmx320m -XX:MaxMetaspaceSize=160m
+    volumes:
+      - ./data/fallback:/data/fallback
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 25s
+    mem_limit: 640m
+    logging: *default-logging
+
+  # ------------------------------------------------------------ ad-decision
+  # 광고 요청을 받아 소재를 결정하고, 같은 트랜잭션에서 event_outbox 에 INSERT.
+  # 같은 앱 안의 스케줄러(OutboxWorker)가 미발행 행을 Kafka ad.request 로 밀어낸다.
+  ad-decision:
+    build:
+      context: ./ad-decision
+      dockerfile: Dockerfile
+    image: ottads/ad-decision:0.1.0
+    container_name: ottads-ad-decision
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8090:8090"
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      PG_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-adplatform}
+      PG_USER: ${POSTGRES_USER:-ads}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-ads}
+      AD_NO_FILL_RATE: ${AD_NO_FILL_RATE:-0.08}
+      OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-500}
+      OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-500}
+      # 발행 후 플래그 업데이트 실패 재현 확률. 0 으로 두면 중복이 생기지 않는다.
+      OUTBOX_UPDATE_FAIL_RATE: ${OUTBOX_UPDATE_FAIL_RATE:-0.02}
+      JAVA_OPTS: -Xmx256m -XX:MaxMetaspaceSize=160m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 25s
+    mem_limit: 576m
+    logging: *default-logging
+
+  # ----------------------------------------------------------- redis-writer
+  # Flink 의 분단위 집계(agg.minute) + late.events + alert.anomaly 를 Redis 에 적재.
+  #
+  # 이 컨테이너는 순전히 "Flink 1.20 용 Redis SQL 커넥터가 없어서" 존재한다.
+  # 자세한 근거는 flink/Dockerfile 과 redis-writer/writer.py 상단 주석 참조.
+  redis-writer:
+    build:
+      context: ./redis-writer
+      dockerfile: Dockerfile
+    image: ottads/redis-writer:0.1.0
+    container_name: ottads-redis-writer
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AGG_TTL_SECONDS: ${AGG_TTL_SECONDS:-172800}   # 48시간
+    ports:
+      - "8099:8099"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if 'UP' in urllib.request.urlopen('http://localhost:8099/').read().decode() else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    mem_limit: 256m
+    logging: *default-logging
+
+  # -------------------------------------------------------------- Dashboard
+  # 단일 HTML + JS (프레임워크 없음, 1초 폴링) + JSON API.
+  # Collector/ad-decision 의 Prometheus, Kafka Admin API, Flink REST,
+  # Redis, PostgreSQL 여섯 군데를 긁어 하나로 합쳐 준다.
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    image: ottads/dashboard:0.1.0
+    container_name: ottads-dashboard
+    # 관찰 전용이라 죽으면 알아서 돌아오게 둔다.
+    # (librdkafka 가 SIGSEGV 를 내면 파이썬 예외로 못 잡는다)
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      COLLECTOR_URL: http://collector:8080
+      AD_DECISION_URL: http://ad-decision:8090
+      FLINK_URL: http://jobmanager:8081
+      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_HOST: redis
+      PG_HOST: postgres
+      PG_DB: ${POSTGRES_DB:-adplatform}
+      PG_USER: ${POSTGRES_USER:-ads}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-ads}
+      CHART_MINUTES: ${CHART_MINUTES:-30}
+    ports:
+      - "8088:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if 'UP' in urllib.request.urlopen('http://localhost:8088/api/health').read().decode() else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    mem_limit: 384m
+    logging: *default-logging
+
+  # ----------------------------------------------------------------- Tracer
+  # 클릭 한 번으로 이벤트를 넣고 파이프라인 다섯 자리를 따라가는 페이지.
+  # 대시보드(8088)가 "전체가 얼마나 흐르나" 라면 이쪽은 "한 건이 어디까지 갔나" 다.
+  tracer:
+    build:
+      context: ./tracer
+      dockerfile: Dockerfile
+    image: ottads/tracer:0.1.0
+    container_name: ottads-tracer
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      COLLECTOR_URL: http://collector:8080
+      AD_DECISION_URL: http://ad-decision:8090
+      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_HOST: redis
+      MINIO_HOST: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-events}
+      COLLECTOR_HMAC_SECRET: ${COLLECTOR_HMAC_SECRET:-local-dev-secret}
+      PG_HOST: postgres
+      PG_DB: ${POSTGRES_DB:-adplatform}
+      PG_USER: ${POSTGRES_USER:-ads}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-ads}
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if 'UP' in urllib.request.urlopen('http://localhost:3000/api/health').read().decode() else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    mem_limit: 512m
+    logging: *default-logging
+
+  # ----------------------------------------------------------------- Player
+  # OTT 재생 화면(데모). 사람이 광고를 실제로 "보고" 그 이벤트가 파이프라인으로 들어간다.
+  # 추적기(3000)가 "이벤트 1건을 골라 넣는 실험대" 라면 이쪽은 "사용자 화면" 이다.
+  player:
+    build:
+      context: ./player
+      dockerfile: Dockerfile
+    image: ottads/player:0.1.0
+    container_name: ottads-player
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      COLLECTOR_URL: http://collector:8080
+      AD_DECISION_URL: http://ad-decision:8090
+      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_HOST: redis
+      MINIO_HOST: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-events}
+      COLLECTOR_HMAC_SECRET: ${COLLECTOR_HMAC_SECRET:-local-dev-secret}
+      PG_HOST: postgres
+      PG_DB: ${POSTGRES_DB:-adplatform}
+      PG_USER: ${POSTGRES_USER:-ads}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-ads}
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if 'UP' in urllib.request.urlopen('http://localhost:3001/api/health').read().decode() else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    mem_limit: 512m
+    logging: *default-logging
+
+  # -------------------------------------------------------------- Generator
+  # 트래픽 시뮬레이터. 상시 기동하지 않고 `make load` 가 run 으로 띄운다.
+  generator:
+    build:
+      context: ./generator
+      dockerfile: Dockerfile
+    image: ottads/generator:0.1.0
+    profiles: ["load"]
+    environment:
+      COLLECTOR_URL: http://collector:8080
+      COLLECTOR_HMAC_SECRET: ${COLLECTOR_HMAC_SECRET:-local-dev-secret}
+      # 단계 3에서 연결. 비어 있으면 생성기가 ad_request 이벤트를 자체 생성한다.
+      AD_DECISION_URL: ${AD_DECISION_URL:-http://ad-decision:8090}
+    mem_limit: 768m
+    logging: *default-logging
+
+  # ------------------------------------------------------------------ Spark
+  # 상시 기동하면 메모리를 낭비하므로 profile 로 분리. `make batch` 가 run 으로 띄운다.
+  spark:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: ottads/spark:3.5.3-0.1.0
+    container_name: ottads-spark
+    profiles: ["batch"]
+    user: "0:0"
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-events}
+      PG_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-adplatform}
+      PG_USER: ${POSTGRES_USER:-ads}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-ads}
+    volumes:
+      - ./spark:/opt/spark-jobs:ro
+      - ./data:/data
+      - spark-ivy:/opt/spark/.ivy2
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["echo 'spark container is on-demand: use make batch'"]
+    depends_on:
+      - minio
+      - postgres
+    mem_limit: 2g
+    logging: *default-logging
+
+volumes:
+  kafka-data:
+  pg-data:
+  spark-ivy:

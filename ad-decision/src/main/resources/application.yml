@@ -1,0 +1,61 @@
+server:
+  port: 8090
+  tomcat:
+    threads:
+      max: 100          # 로컬. 운영은 요청량/DB 커넥션에 맞춰 조정
+      min-spare: 10
+
+spring:
+  application:
+    name: ad-decision
+  main:
+    banner-mode: "off"
+  datasource:
+    url: ${PG_URL:jdbc:postgresql://localhost:5432/adplatform}
+    username: ${PG_USER:ads}
+    password: ${PG_PASSWORD:ads}
+    hikari:
+      maximum-pool-size: 15      # 운영: 인스턴스당 20~30 + PgBouncer
+      minimum-idle: 3
+      connection-timeout: 3000
+
+kafka:
+  bootstrap: ${KAFKA_BOOTSTRAP:localhost:29092}
+
+addecision:
+  # 노필 비율. 광고 요청이 왔지만 채울 소재가 없는 경우.
+  # 이게 있어야 impression/request 비율이 1 밑으로 내려가고,
+  # 단계 4의 이상 감지(임계치 0.5)가 의미를 갖는다.
+  no-fill-rate: ${AD_NO_FILL_RATE:0.08}
+  # 건너뛰기 버튼이 뜨기까지의 초. 플레이어(포트 3001)가 이 값으로 카운트다운을 그린다.
+  skippable-after-s: ${AD_SKIPPABLE_AFTER_S:5}
+
+outbox:
+  poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:500}
+  batch-size: ${OUTBOX_BATCH_SIZE:500}          # 운영: 1000~5000
+  topic: ad.request
+  # 발행 후 published=true 업데이트가 실패하는 상황을 이 확률로 재현한다.
+  # 실패하면 다음 폴링에서 같은 행을 다시 발행하므로 Kafka 에 중복이 생긴다.
+  # 이 중복이 "의도된 동작"이고, 뒤 단계에서 누가 어떻게 걷어내는지가 관찰 대상이다.
+  update-fail-rate: ${OUTBOX_UPDATE_FAIL_RATE:0.02}
+  stats-interval-ms: 2000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ad-decision
+
+logging:
+  level:
+    root: INFO
+    com.ottads.addecision: INFO
+    org.apache.kafka.clients.NetworkClient: ERROR
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{20} - %msg%n"

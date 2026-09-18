@@ -1,0 +1,16 @@
+# ===========================================================================
+# Collector 수동 스케일 아웃 전용 오버레이 (시나리오 1).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+#     up -d --no-deps --scale collector=3 collector
+#
+# 기본 compose 는 8080 고정이라 --scale 이 포트 충돌로 실패한다.
+# 여기서만 범위로 바꾼다. 범위를 기본값으로 두면 compose 가 범위 안의 임의 포트를
+# 잡아 진입점(localhost:8080)이 매번 달라지므로 분리해 두었다.
+#
+# 8081 은 비어 있다. Flink UI 를 8181 로 옮긴 이유가 이것이다.
+# ===========================================================================
+services:
+  collector:
+    ports: !override
+      - "8080-8085:8080"

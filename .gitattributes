@@ -1,0 +1,6 @@
+# 스크립트와 설정 파일은 리눅스 컨테이너 안에서 실행된다.
+# Windows 의 core.autocrlf=true 가 checkout 때 CRLF 로 바꾸면
+# bash 가 $'\r': command not found 로 죽으므로 저장소 전체를 LF 로 고정한다.
+* text=auto eol=lf
+*.png binary
+*.jar binary

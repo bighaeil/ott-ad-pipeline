@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTT 광고 파이프라인 관찰</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#26303d; --fg:#d7dee8; --dim:#7d8899;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#58a6ff; --accent2:#d2a8ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:13px/1.45 ui-monospace,SFMono-Regular,Consolas,"D2Coding",monospace}
+  header{display:flex;align-items:baseline;gap:16px;padding:10px 16px;
+         border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5}
+  header h1{font-size:14px;margin:0;letter-spacing:.5px}
+  .muted{color:var(--dim)}
+  #dot{width:8px;height:8px;border-radius:50%;background:var(--bad);display:inline-block}
+  #dot.on{background:var(--ok)}
+  main{display:grid;gap:10px;padding:10px 16px 40px;
+       grid-template-columns:repeat(auto-fit,minmax(380px,1fr))}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px}
+  section.wide{grid-column:1/-1}
+  h2{font-size:11px;margin:0 0 8px;color:var(--accent);letter-spacing:1.5px;text-transform:uppercase}
+  .kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:8px}
+  .kv div{background:#11161d;border:1px solid var(--line);border-radius:4px;padding:6px 8px}
+  .kv .l{color:var(--dim);font-size:10px;letter-spacing:.5px}
+  .kv .v{font-size:19px;font-variant-numeric:tabular-nums}
+  .v.ok{color:var(--ok)} .v.warn{color:var(--warn)} .v.bad{color:var(--bad)}
+  .v small{font-size:11px;color:var(--dim)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:right;padding:3px 6px;border-bottom:1px solid #1d242e;white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--dim);font-weight:normal;font-size:10px;letter-spacing:.5px}
+  td.cause{text-align:left;white-space:normal;color:var(--dim);font-size:11px}
+  .bar{height:4px;background:#11161d;border-radius:2px;overflow:hidden;margin-top:3px}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  canvas{width:100%;height:230px;display:block}
+  .legend{display:flex;gap:14px;align-items:center;margin:4px 0 6px;font-size:11px;color:var(--dim)}
+  .sw{display:inline-block;width:18px;height:3px;vertical-align:middle;margin-right:5px}
+  select{background:#11161d;color:var(--fg);border:1px solid var(--line);border-radius:4px;
+         padding:2px 6px;font:inherit}
+  .alerts{max-height:140px;overflow:auto}
+  .alert{border-left:2px solid var(--bad);padding:2px 8px;margin-bottom:4px;font-size:11px}
+  .note{color:var(--dim);font-size:11px;margin-top:6px}
+  nav.links{margin-left:auto;display:flex;gap:12px;flex-wrap:wrap}
+  nav.links a{color:var(--dim);text-decoration:none;font-size:11px;
+              border:1px solid var(--line);border-radius:4px;padding:2px 8px}
+  nav.links a:hover{color:var(--accent);border-color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>OTT 광고 파이프라인 관찰</h1>
+  <span class="muted"><span id="dot"></span> <span id="status">연결 중…</span></span>
+  <span class="muted" id="clock"></span>
+  <nav class="links">
+    <a href="http://localhost:3000" target="_blank" rel="noopener">이벤트 추적기</a>
+    <a href="http://localhost:8181" target="_blank" rel="noopener">Flink UI</a>
+    <a href="http://localhost:9001" target="_blank" rel="noopener">MinIO 콘솔</a>
+    <a href="http://localhost:8080/actuator/prometheus" target="_blank" rel="noopener">Collector 메트릭</a>
+    <a href="http://localhost:8090/v1/outbox/stats" target="_blank" rel="noopener">Outbox</a>
+    <a href="http://localhost:8099/agg/summary" target="_blank" rel="noopener">실시간 집계 JSON</a>
+    <a href="/api/overview" target="_blank" rel="noopener">이 화면의 원본 JSON</a>
+  </nav>
+</header>
+
+<main>
+  <!-- ─────────────────────────────────────────────── 수집 -->
+  <section>
+    <h2>수집 (Collector) <span class="muted" id="i_rep"></span></h2>
+    <div class="kv">
+      <div><div class="l">초당 수신</div><div class="v" id="i_rate">–</div></div>
+      <div><div class="l">누적 수신</div><div class="v" id="i_recv">–</div></div>
+      <div><div class="l">검증 실패</div><div class="v" id="i_inval">–</div></div>
+      <div><div class="l">fallback</div><div class="v" id="i_fb">–</div></div>
+      <div><div class="l">DLQ 누적</div><div class="v" id="i_dlq">–</div></div>
+    </div>
+    <div class="note" id="i_reason"></div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────── 버퍼 -->
+  <section>
+    <h2>버퍼 (Kafka)</h2>
+    <table id="t_topics"><thead><tr>
+      <th>토픽</th><th>produce</th><th>건/초</th><th></th>
+    </tr></thead><tbody></tbody></table>
+    <div class="note" id="k_groups"></div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────── 처리 -->
+  <section>
+    <h2>처리 (Flink)</h2>
+    <div class="kv">
+      <div><div class="l">입력 건/초</div><div class="v" id="f_rate">–</div></div>
+      <div><div class="l">입력 누계</div><div class="v" id="f_in">–</div></div>
+      <div><div class="l">중복제거</div><div class="v" id="f_dedup">–</div></div>
+      <div><div class="l">late.events</div><div class="v" id="f_late">–</div></div>
+      <div><div class="l">체크포인트</div><div class="v" id="f_cp">–</div></div>
+    </div>
+    <div class="note" id="f_jobs"></div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────── 정합성 -->
+  <section>
+    <h2>정합성 (impression / request, Outbox)</h2>
+    <div class="kv">
+      <div><div class="l">Outbox 미발행</div><div class="v" id="o_unpub">–</div></div>
+      <div><div class="l">최고 지연</div><div class="v" id="o_lag">–</div></div>
+      <div><div class="l">재발행(중복)</div><div class="v" id="o_dup">–</div></div>
+      <div><div class="l">노필 비율</div><div class="v" id="o_nofill">–</div></div>
+    </div>
+    <table id="t_ratio"><thead><tr>
+      <th>캠페인</th><th>imp</th><th>req</th><th>비율</th><th>SSAI</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <!-- ─────────────────────────────────────────────── 그래프 -->
+  <section class="wide">
+    <h2>집계 — 캠페인별 분 단위 impression &nbsp;
+      <select id="camp"><option value="__ALL__">전체 합계</option></select>
+    </h2>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--accent)"></i>실시간 (Redis / Flink)</span>
+      <span><i class="sw" style="background:var(--accent2)"></i>확정 (PostgreSQL / Spark 배치)</span>
+      <span class="muted">확정 선은 <code>make batch</code> 를 돌린 시점까지만 그려진다</span>
+    </div>
+    <canvas id="chart" width="1600" height="460"></canvas>
+  </section>
+
+  <!-- ─────────────────────────────────────────────── 대사 -->
+  <section class="wide">
+    <h2>대사 — 실시간 합계 vs 확정 합계</h2>
+    <div class="kv" style="margin-bottom:8px">
+      <div><div class="l">실시간 합계</div><div class="v" id="r_rt">–</div></div>
+      <div><div class="l">확정 합계</div><div class="v" id="r_bt">–</div></div>
+      <div><div class="l">차이</div><div class="v" id="r_diff">–</div></div>
+      <div><div class="l">차이율</div><div class="v" id="r_rate">–</div></div>
+      <div><div class="l">정산 금액</div><div class="v" id="r_amt">–</div></div>
+    </div>
+    <table id="t_recon"><thead><tr>
+      <th>캠페인</th><th>실시간</th><th>확정</th><th>차이</th><th>차이율</th><th style="text-align:left">원인 분해</th>
+    </tr></thead><tbody></tbody></table>
+    <div class="note" id="r_when"></div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────── 경고 -->
+  <section class="wide">
+    <h2>이상 감지 (alert.anomaly)</h2>
+    <div class="alerts" id="alerts"><span class="muted">아직 없음</span></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => (n === null || n === undefined) ? '–' : Number(n).toLocaleString();
+const pct = n => (n*100).toFixed(2) + '%';
+let CHART = {rt:{}, bt:{}, minutes:0};
+
+async function poll(){
+  let d;
+  try{
+    d = await (await fetch('/api/overview', {cache:'no-store'})).json();
+  }catch(e){
+    $('dot').classList.remove('on'); $('status').textContent = 'API 연결 실패'; return;
+  }
+  if(!d.ready){ $('status').textContent = '수집 대기 중…'; return; }
+  $('dot').classList.add('on');
+  $('status').textContent = 'live';
+  $('clock').textContent = new Date(d.ts*1000).toLocaleTimeString();
+
+  render(d);
+  drawChart();
+}
+
+function cls(el, good){ el.className = 'v ' + good; }
+
+function render(d){
+  // ---- 수집
+  const g = d.ingest || {};
+  $('i_rate').innerHTML = fmt(Math.round(g.received_rate)) + ' <small>/s</small>';
+  cls($('i_rate'), g.received_rate > 0 ? 'ok' : '');
+  $('i_recv').textContent = fmt(g.received);
+  $('i_inval').innerHTML = fmt(g.invalid) + ' <small>' + (g.invalid_rate||0).toFixed(1) + '/s</small>';
+  cls($('i_inval'), g.invalid_rate > 0 ? 'warn' : '');
+  $('i_fb').innerHTML = fmt(g.fallback) + ' <small>미재적재 ' + fmt(g.fallback_pending) + '</small>';
+  cls($('i_fb'), g.fallback_pending > 0 ? 'bad' : (g.fallback > 0 ? 'warn' : ''));
+  $('i_dlq').textContent = fmt(g.dlq);
+  $('i_rep').textContent = g.replicas ? ('인스턴스 ' + g.replicas_up + '/' + g.replicas) : '';
+  $('i_reason').textContent = Object.entries(g.by_reason||{})
+      .map(([k,v]) => k + ' ' + fmt(v)).join('   ') || '';
+
+  // ---- 버퍼
+  const kt = (d.kafka||{}).topics || [];
+  const max = Math.max(1, ...kt.map(t => t.rate));
+  $('t_topics').tBodies[0].innerHTML = kt.map(t => `
+    <tr><td>${t.topic}</td><td>${fmt(t.produced)}</td>
+    <td>${t.rate ? t.rate.toFixed(1) : '·'}</td>
+    <td style="width:35%"><div class="bar"><i style="width:${(t.rate/max*100).toFixed(0)}%"></i></div></td></tr>`).join('');
+  const gr = (d.kafka||{}).groups || {};
+  $('k_groups').innerHTML = 'consumer lag &nbsp; ' + Object.entries(gr)
+      .map(([k,v]) => `${k}=<b style="color:${v.lag>1000?'var(--bad)':'var(--fg)'}">${v.lag===null?'?':fmt(v.lag)}</b>`)
+      .join(' &nbsp; ');
+
+  // ---- 처리
+  const f = d.flink || {};
+  $('f_rate').innerHTML = fmt(Math.round(f.input_rate)) + ' <small>/s</small>';
+  cls($('f_rate'), f.input_rate > 0 ? 'ok' : '');
+  $('f_in').textContent = fmt(f.input);
+  $('f_dedup').innerHTML = fmt(f.dedup_removed) +
+      ' <small>' + fmt(f.dedup_in) + '→' + fmt(f.dedup_out) + '</small>';
+  cls($('f_dedup'), f.dedup_removed > 0 ? 'warn' : '');
+  $('f_late').innerHTML = fmt(f.late_out) + ' <small>' + (f.late_rate||0).toFixed(1) + '/s</small>';
+  cls($('f_late'), f.late_out > 0 ? 'warn' : '');
+  const cp = f.checkpoints;
+  $('f_cp').innerHTML = cp ? fmt(cp.completed) + ' <small>실패 ' + fmt(cp.failed) +
+      ' / ' + cp.size_kb + 'KB</small>' : '–';
+  cls($('f_cp'), cp && cp.failed > 0 ? 'bad' : 'ok');
+  $('f_jobs').innerHTML = (f.jobs||[]).filter(j=>j.state==='RUNNING')
+      .map(j => `${j.name} <span class="muted">${j.running}/${j.total} tasks</span>`).join(' &nbsp;|&nbsp; ')
+      || '<span style="color:var(--bad)">실행 중인 Flink 잡 없음 — bash scripts/flink-submit.sh</span>';
+
+  // ---- 정합성
+  const o = d.outbox || {};
+  $('o_unpub').textContent = fmt(o.unpublished);
+  cls($('o_unpub'), o.unpublished > 100 ? 'bad' : (o.unpublished > 0 ? 'warn' : 'ok'));
+  $('o_lag').innerHTML = fmt(o.lag_seconds) + ' <small>초</small>';
+  cls($('o_lag'), o.lag_seconds > 30 ? 'bad' : (o.lag_seconds > 5 ? 'warn' : 'ok'));
+  $('o_dup').textContent = fmt(o.republished);
+  cls($('o_dup'), o.republished > 0 ? 'warn' : '');
+  const tot = (o.fill||0) + (o.nofill||0);
+  $('o_nofill').innerHTML = tot ? pct((o.nofill||0)/tot) + ' <small>' + fmt(o.nofill) + '/' + fmt(tot) + '</small>' : '–';
+
+  const totals = (d.realtime||{}).totals || {};
+  $('t_ratio').tBodies[0].innerHTML = Object.entries(totals).sort()
+    .map(([cid,v]) => {
+      const r = v.requests ? v.impressions/v.requests : null;
+      const c = r === null ? '' : (r < 0.5 ? 'var(--bad)' : (r < 0.8 ? 'var(--warn)' : 'var(--ok)'));
+      return `<tr><td>${cid}</td><td>${fmt(v.impressions)}</td><td>${fmt(v.requests)}</td>
+        <td style="color:${c}">${r===null?'·':r.toFixed(3)}</td><td>${fmt(v.ssai_dupes)}</td></tr>`;
+    }).join('');
+
+  // ---- 대사
+  const rec = (d.batch||{}).recon || [];
+  const daily = (d.batch||{}).daily || [];
+  const rtTot = rec.reduce((a,r)=>a+r.realtime,0), btTot = rec.reduce((a,r)=>a+r.batch,0);
+  $('r_rt').textContent = fmt(rtTot);
+  $('r_bt').textContent = fmt(btTot);
+  $('r_diff').textContent = (btTot-rtTot >= 0 ? '+' : '') + fmt(btTot-rtTot);
+  const dr = Math.max(rtTot,btTot,1) ? (btTot-rtTot)/Math.max(rtTot,btTot,1) : 0;
+  $('r_rate').textContent = rec.length ? pct(dr) : '–';
+  cls($('r_rate'), Math.abs(dr) > 0.05 ? 'warn' : 'ok');
+  $('r_amt').innerHTML = fmt(Math.round(daily.reduce((a,r)=>a+r.amount,0))) + ' <small>KRW</small>';
+  $('t_recon').tBodies[0].innerHTML = rec.map(r => `
+    <tr><td>${r.campaign_id}</td><td>${fmt(r.realtime)}</td><td>${fmt(r.batch)}</td>
+    <td>${r.diff>=0?'+':''}${fmt(r.diff)}</td>
+    <td style="color:${Math.abs(r.diff_rate)>0.05?'var(--warn)':'var(--fg)'}">${pct(r.diff_rate)}</td>
+    <td class="cause">${r.cause||''}</td></tr>`).join('')
+    || '<tr><td colspan="6" class="cause">대사 결과 없음 — bash scripts/recon.sh 를 먼저 실행</td></tr>';
+  $('r_when').textContent = rec.length ? ('마지막 대사: ' + rec[0].run_at) : '';
+
+  // ---- 경고
+  const al = (d.realtime||{}).alerts || [];
+  $('alerts').innerHTML = al.length ? al.map(a => `
+    <div class="alert"><b>${a.campaign_id}</b> ${a.window_start} —
+      imp ${a.impressions} / req ${a.requests} = <b>${(a.imp_req_ratio||0).toFixed(3)}</b>
+      (임계 ${a.threshold}) ${a.alert_type}</div>`).join('')
+    : '<span class="muted">아직 없음 — bash scripts/load.sh --drop-impression 0.7 로 발생시킬 수 있다</span>';
+
+  // ---- 차트 데이터
+  CHART.rt = (d.realtime||{}).series || {};
+  CHART.bt = (d.batch||{}).minute || {};
+  CHART.minutes = d.chart_minutes || 30;
+  const sel = $('camp');
+  const camps = [...new Set([...Object.keys(CHART.rt), ...Object.keys(CHART.bt)])].sort();
+  const have = [...sel.options].map(o=>o.value);
+  camps.filter(c=>!have.includes(c)).forEach(c => sel.add(new Option(c, c)));
+}
+
+function drawChart(){
+  const cv = $('chart'), ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height, PL = 62, PR = 90, PT = 16, PB = 34;
+  ctx.clearRect(0,0,W,H);
+
+  const sel = $('camp').value;
+  const nowM = Math.floor(Date.now()/60000)*60;
+  const mins = [];
+  for(let i = CHART.minutes; i >= 0; i--) mins.push(nowM - i*60);
+
+  // 확정(배치)은 make batch 를 돌린 시점까지만 존재한다.
+  // 그 뒤를 0 으로 그리면 "확정이 0" 처럼 보이므로 마지막 데이터 분에서 선을 끊는다.
+  const btKeys = [];
+  Object.entries(CHART.bt).forEach(([c, s]) => {
+    if(sel !== '__ALL__' && c !== sel) return;
+    Object.keys(s).forEach(k => btKeys.push(+k));
+  });
+  const btLast = btKeys.length ? Math.max(...btKeys) : null;
+
+  const pick = (src) => mins.map(m => {
+    if(sel === '__ALL__') return Object.values(src).reduce((a,s) => a + (s[m]||0), 0);
+    return (src[sel] || {})[m] || 0;
+  });
+  const rt = pick(CHART.rt);
+  const bt = pick(CHART.bt).map((v,i) => (btLast !== null && mins[i] <= btLast) ? v : null);
+  const max = Math.max(10, ...rt, ...bt.filter(v => v !== null));
+
+  const X = i => PL + (W-PL-PR) * i / Math.max(mins.length-1, 1);
+  const Y = v => H-PB - (H-PT-PB) * v / max;
+
+  // 격자 + y축
+  ctx.strokeStyle = '#26303d'; ctx.fillStyle = '#7d8899';
+  ctx.lineWidth = 1; ctx.font = '18px monospace'; ctx.textAlign = 'right';
+  for(let i=0;i<=4;i++){
+    const v = Math.round(max*i/4), y = Y(v);
+    ctx.beginPath(); ctx.moveTo(PL,y); ctx.lineTo(W-PR,y); ctx.stroke();
+    ctx.fillText(v.toLocaleString(), PL-8, y+6);
+  }
+  ctx.textAlign = 'center';
+  mins.forEach((m,i) => {
+    if(i % Math.ceil(mins.length/10)) return;
+    const t = new Date(m*1000);
+    ctx.fillText(String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0'), X(i), H-10);
+  });
+
+  // 확정(배치) - 굵은 면 + 선. 먼저 그려 아래에 깐다.
+  const btIdx = bt.map((v,i)=>[v,i]).filter(([v])=>v!==null);
+  if(btIdx.length){
+    ctx.fillStyle = 'rgba(210,168,255,0.16)';
+    ctx.beginPath();
+    ctx.moveTo(X(btIdx[0][1]), Y(0));
+    btIdx.forEach(([v,i]) => ctx.lineTo(X(i), Y(v)));
+    ctx.lineTo(X(btIdx[btIdx.length-1][1]), Y(0));
+    ctx.closePath(); ctx.fill();
+
+    ctx.strokeStyle = '#d2a8ff'; ctx.lineWidth = 5; ctx.beginPath();
+    btIdx.forEach(([v,i],k) => k ? ctx.lineTo(X(i),Y(v)) : ctx.moveTo(X(i),Y(v)));
+    ctx.stroke();
+
+    // 배치가 계산한 마지막 시점 표시
+    const lastI = mins.indexOf(btLast);
+    if(lastI >= 0){
+      ctx.strokeStyle = '#8a6ab8'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+      ctx.beginPath(); ctx.moveTo(X(lastI), PT); ctx.lineTo(X(lastI), H-PB); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#8a6ab8'; ctx.textAlign = 'left'; ctx.font = '16px monospace';
+      ctx.fillText('배치 계산 시점', X(lastI)+6, PT+16);
+    }
+  }
+
+  // 실시간 - 가는 선을 위에 얹는다. 두 값이 같으면 보라 위에 파랑이 겹쳐 보인다.
+  ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 2; ctx.beginPath();
+  rt.forEach((v,i) => i ? ctx.lineTo(X(i),Y(v)) : ctx.moveTo(X(i),Y(v)));
+  ctx.stroke();
+
+  // 오른쪽 끝 현재값
+  const lastRt = rt[rt.length-1];
+  ctx.fillStyle = '#58a6ff'; ctx.textAlign = 'left'; ctx.font = 'bold 20px monospace';
+  ctx.fillText(lastRt.toLocaleString(), W-PR+8, Y(lastRt)+7);
+  if(btIdx.length){
+    const lb = btIdx[btIdx.length-1];
+    ctx.fillStyle = '#d2a8ff';
+    ctx.fillText(lb[0].toLocaleString(), W-PR+8, Y(lb[0])+7+ (Math.abs(Y(lb[0])-Y(lastRt))<18 ? 22 : 0));
+  }
+}
+
+$('camp').addEventListener('change', drawChart);
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

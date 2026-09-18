@@ -1,0 +1,46 @@
+server:
+  port: 8080
+  netty:
+    idle-timeout: 30s
+
+spring:
+  application:
+    name: collector
+  main:
+    banner-mode: "off"
+
+kafka:
+  bootstrap: ${KAFKA_BOOTSTRAP:localhost:29092}
+  # 브로커가 죽었을 때 프로듀서가 메타데이터를 기다리며 붙잡는 최대 시간.
+  # 이 값이 커지면 fail-open 이 늦어져 수집 응답이 밀린다. 로컬 2초 / 운영 5초.
+  max-block-ms: ${COLLECTOR_KAFKA_MAX_BLOCK_MS:2000}
+
+collector:
+  hmac-secret: ${COLLECTOR_HMAC_SECRET:local-dev-secret}
+  fallback-dir: ${COLLECTOR_FALLBACK_DIR:./data/fallback}
+  publish-timeout-ms: ${COLLECTOR_PUBLISH_TIMEOUT_MS:3000}
+  max-batch-size: 5000
+  publish-concurrency: 64
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: collector
+  # Kafka 는 헬스 인디케이터에 넣지 않는다.
+  # 브로커가 죽어도 Collector 는 fallback 으로 계속 받아야 하므로 UP 이어야 한다.
+
+logging:
+  level:
+    root: INFO
+    com.ottads.collector: INFO
+    org.apache.kafka.clients.NetworkClient: ERROR
+    org.apache.kafka.clients.producer.internals.Sender: ERROR
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{20} - %msg%n"

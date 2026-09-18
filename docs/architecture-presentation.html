@@ -1,0 +1,1134 @@
+<title>OTT 광고 정산 파이프라인</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@300;400;500;600&display=swap">
+
+<style>
+/* ── 팔레트 ───────────────────────────────────────────────────────────
+   방송 부조(control room)에서 가져왔다. 차가운 잉크 위에 탈리 램프의 앰버.
+   장점/단점은 액센트와 분리된 의미색으로 둔다.                        */
+:root{
+  --paper:#F4F6F8;
+  --surface:#FFFFFF;
+  --surface-2:#EDF0F4;
+  --ink:#16202B;
+  --ink-2:#43525F;
+  --muted:#6B7A88;
+  --rule:#D6DCE3;
+  --rule-2:#E6EAEF;
+  --accent:#B4700F;
+  --accent-soft:#F5E7CE;
+  --pro:#2C6B4F;
+  --pro-soft:#E0EDE6;
+  --con:#9E4227;
+  --con-soft:#F4E3DD;
+
+  --f-display:"Gowun Batang",Georgia,"Nanum Myeongjo",serif;
+  --f-body:"IBM Plex Sans KR","Malgun Gothic",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono","D2Coding",ui-monospace,monospace;
+
+  --step--1:0.812rem;
+  --step-0:1rem;
+  --step-1:1.18rem;
+  --step-2:1.45rem;
+  --step-3:1.85rem;
+  --step-4:2.5rem;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0F141A;
+    --surface:#161D25;
+    --surface-2:#1D262F;
+    --ink:#DEE5EC;
+    --ink-2:#AFBCC8;
+    --muted:#8493A1;
+    --rule:#2A3540;
+    --rule-2:#222B34;
+    --accent:#E5A64C;
+    --accent-soft:#2E2517;
+    --pro:#63BE92;
+    --pro-soft:#17281F;
+    --con:#E28866;
+    --con-soft:#2B1B15;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0F141A;
+  --surface:#161D25;
+  --surface-2:#1D262F;
+  --ink:#DEE5EC;
+  --ink-2:#AFBCC8;
+  --muted:#8493A1;
+  --rule:#2A3540;
+  --rule-2:#222B34;
+  --accent:#E5A64C;
+  --accent-soft:#2E2517;
+  --pro:#63BE92;
+  --pro-soft:#17281F;
+  --con:#E28866;
+  --con-soft:#2B1B15;
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
+
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--f-body);
+  font-weight:300;
+  font-size:var(--step-0);
+  line-height:1.75;
+  -webkit-font-smoothing:antialiased;
+}
+
+.wrap{display:grid;grid-template-columns:1fr;gap:0;max-width:1180px;margin:0 auto;padding:0 22px 96px}
+@media (min-width:1060px){
+  .wrap{grid-template-columns:198px minmax(0,1fr);gap:56px;padding-right:38px}
+}
+
+/* ── 발표 순서 레일 ──────────────────────────────────────────────── */
+.rail{display:none}
+@media (min-width:1060px){
+  .rail{display:block;position:sticky;top:0;align-self:start;padding-top:64px;height:100vh;overflow-y:auto}
+}
+.rail-title{font-family:var(--f-mono);font-size:0.66rem;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 14px}
+.rail ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.rail a{
+  display:grid;grid-template-columns:1.5rem 1fr;gap:6px;
+  text-decoration:none;color:var(--ink-2);font-size:0.8rem;line-height:1.35;
+  padding:5px 6px 5px 0;border-left:2px solid transparent;padding-left:9px;
+}
+.rail a:hover{color:var(--accent);border-left-color:var(--accent)}
+.rail a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+.rail .n{font-family:var(--f-mono);font-size:0.68rem;color:var(--muted);padding-top:.15em}
+
+/* ── 표지 ─────────────────────────────────────────────────────────── */
+header.cover{padding:64px 0 40px;border-bottom:1px solid var(--rule)}
+.eyebrow{
+  font-family:var(--f-mono);font-size:0.7rem;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 18px;
+}
+h1{
+  font-family:var(--f-display);font-weight:700;font-size:var(--step-4);line-height:1.2;
+  margin:0 0 18px;letter-spacing:-.01em;text-wrap:balance;max-width:19ch;
+}
+.lede{font-size:var(--step-1);color:var(--ink-2);max-width:62ch;margin:0 0 26px;font-weight:300}
+.lede strong{font-weight:500;color:var(--ink)}
+.facts{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--rule-2);padding-top:18px}
+.fact{padding-right:34px;margin-right:34px;border-right:1px solid var(--rule-2)}
+.fact:last-child{border-right:0;margin-right:0;padding-right:0}
+.fact dt{font-family:var(--f-mono);font-size:0.66rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);margin:0 0 3px}
+.fact dd{margin:0;font-size:0.94rem;color:var(--ink);font-weight:500}
+
+/* ── 섹션 ─────────────────────────────────────────────────────────── */
+section{padding:52px 0;border-bottom:1px solid var(--rule-2)}
+section:last-of-type{border-bottom:0}
+.sec-head{display:grid;grid-template-columns:2.6rem 1fr;gap:14px;align-items:baseline;margin:0 0 22px}
+.sec-num{font-family:var(--f-mono);font-size:0.8rem;color:var(--accent);letter-spacing:.06em;padding-top:.35em}
+h2{font-family:var(--f-display);font-weight:700;font-size:var(--step-3);line-height:1.3;margin:0;letter-spacing:-.01em;text-wrap:balance}
+h3{font-family:var(--f-body);font-weight:600;font-size:var(--step-1);margin:34px 0 10px;color:var(--ink)}
+h4{font-family:var(--f-mono);font-weight:500;font-size:0.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+p{margin:0 0 15px;max-width:66ch}
+ul,ol.body{margin:0 0 15px;padding-left:1.15em;max-width:66ch}
+li{margin-bottom:6px}
+strong{font-weight:600}
+em{font-style:normal;background:var(--accent-soft);color:var(--ink);padding:0 .25em;border-radius:2px}
+code{font-family:var(--f-mono);font-size:0.85em;background:var(--surface-2);padding:.1em .38em;border-radius:3px;color:var(--ink)}
+a{color:var(--accent)}
+
+.callout{
+  background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);
+  padding:16px 20px;margin:22px 0;max-width:70ch;
+}
+.callout p:last-child{margin-bottom:0}
+.callout h4{color:var(--accent)}
+
+/* ── 설계 결정 블록 ─────────────────────────────────────────────── */
+.decision{margin:0 0 44px;padding-top:4px}
+.decision > .d-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 0 4px}
+.d-tag{
+  font-family:var(--f-mono);font-size:0.68rem;letter-spacing:.1em;
+  color:var(--accent);border:1px solid var(--accent);padding:1px 7px;white-space:nowrap;
+}
+.d-title{font-family:var(--f-display);font-weight:700;font-size:var(--step-2);margin:0;line-height:1.3}
+.d-sub{color:var(--muted);font-size:0.88rem;margin:0 0 14px;font-family:var(--f-mono)}
+
+.procon{
+  display:grid;grid-template-columns:1fr;gap:0;margin:18px 0 0;
+  border-top:1px solid var(--rule);
+}
+@media (min-width:680px){.procon{grid-template-columns:1fr 1fr}}
+.procon > div{padding:16px 22px 16px 0}
+@media (min-width:680px){
+  .procon > div:first-child{border-right:1px solid var(--rule-2);padding-right:26px}
+  .procon > div:last-child{padding-left:26px;padding-right:0}
+}
+.pc-label{font-family:var(--f-mono);font-size:0.68rem;letter-spacing:.14em;text-transform:uppercase;margin:0 0 9px;display:flex;align-items:center;gap:7px}
+.pc-label::before{content:"";width:16px;height:2px;display:block}
+.pro .pc-label{color:var(--pro)}
+.pro .pc-label::before{background:var(--pro)}
+.con .pc-label{color:var(--con)}
+.con .pc-label::before{background:var(--con)}
+.procon ul{margin:0;padding-left:1.05em;font-size:0.94rem;max-width:none}
+.procon li{margin-bottom:7px;color:var(--ink-2)}
+.procon li strong{color:var(--ink)}
+
+/* ── 표 ───────────────────────────────────────────────────────────── */
+.tbl-scroll{overflow-x:auto;margin:20px 0 8px;border:1px solid var(--rule)}
+table{border-collapse:collapse;width:100%;font-size:0.9rem;background:var(--surface);min-width:560px}
+th,td{text-align:left;padding:11px 15px;border-bottom:1px solid var(--rule-2);vertical-align:top}
+thead th{
+  font-family:var(--f-mono);font-size:0.68rem;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);font-weight:500;background:var(--surface-2);border-bottom:1px solid var(--rule);
+}
+tbody tr:last-child td{border-bottom:0}
+td.num{font-family:var(--f-mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+td.yes{color:var(--pro);font-weight:500}
+td.no{color:var(--con);font-weight:500}
+
+/* ── 다이어그램 ───────────────────────────────────────────────────── */
+figure{margin:26px 0 30px;padding:0}
+figure svg{display:block;width:100%;max-width:100%;height:auto;color:var(--ink)}
+.fig-frame{background:var(--surface);border:1px solid var(--rule);padding:20px 18px;overflow-x:auto}
+figcaption{font-size:0.85rem;color:var(--muted);margin-top:11px;max-width:66ch;line-height:1.6}
+.svg-box{fill:var(--surface-2);stroke:currentColor;stroke-width:1.1}
+.svg-box-hi{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.6}
+.svg-t{font-family:"IBM Plex Sans KR",sans-serif;font-size:13px;fill:var(--ink);font-weight:400}
+.svg-t-sm{font-family:"IBM Plex Mono",monospace;font-size:11px;fill:var(--muted)}
+.svg-t-hi{font-family:"IBM Plex Mono",monospace;font-size:11.5px;fill:var(--accent);font-weight:500}
+.svg-line{stroke:currentColor;stroke-width:1.2;fill:none;opacity:.6}
+.svg-line-hi{stroke:var(--accent);stroke-width:1.8;fill:none}
+
+/* ── Q&A ──────────────────────────────────────────────────────────── */
+.qa{border-top:1px solid var(--rule);margin-top:8px}
+.qa details{border-bottom:1px solid var(--rule-2)}
+.qa summary{
+  cursor:pointer;padding:14px 0 14px 30px;position:relative;list-style:none;
+  font-weight:500;color:var(--ink);font-size:0.98rem;
+}
+.qa summary::-webkit-details-marker{display:none}
+.qa summary::before{
+  content:"Q";position:absolute;left:0;top:14px;font-family:var(--f-mono);font-size:0.78rem;
+  color:var(--accent);font-weight:500;
+}
+.qa summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.qa details[open] summary{color:var(--accent)}
+.qa .ans{padding:0 0 18px 30px;position:relative;color:var(--ink-2);font-size:0.94rem}
+.qa .ans::before{
+  content:"A";position:absolute;left:0;top:0;font-family:var(--f-mono);font-size:0.78rem;color:var(--muted);
+}
+.qa .ans p{margin:0 0 10px;max-width:68ch}
+.qa .ans p:last-child{margin-bottom:0}
+
+footer{padding:40px 0 0;color:var(--muted);font-size:0.85rem;border-top:1px solid var(--rule)}
+footer p{max-width:68ch}
+</style>
+
+<div class="wrap">
+
+<nav class="rail" aria-label="발표 순서">
+  <p class="rail-title">발표 순서</p>
+  <ol>
+    <li><a href="#s1"><span class="n">01</span><span>무엇을 다루는 시스템인가</span></a></li>
+    <li><a href="#s2"><span class="n">02</span><span>요구사항과 제약</span></a></li>
+    <li><a href="#s3"><span class="n">03</span><span>전체 아키텍처</span></a></li>
+    <li><a href="#s4"><span class="n">04</span><span>설계 결정 6가지</span></a></li>
+    <li><a href="#s5"><span class="n">05</span><span>트레이드오프 정리</span></a></li>
+    <li><a href="#s6"><span class="n">06</span><span>이 설계의 한계</span></a></li>
+    <li><a href="#s7"><span class="n">07</span><span>예상 질문</span></a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="cover">
+  <p class="eyebrow">아키텍처 발표 · 데이터 파이프라인</p>
+  <h1>OTT 광고 이벤트 수집·정산 파이프라인</h1>
+  <p class="lede">
+    스마트TV·모바일에서 광고가 재생될 때 생기는 이벤트를 모아
+    <strong>광고주에게 청구할 금액을 계산</strong>하는 시스템입니다.
+    통제할 수 없는 클라이언트에서 오는 데이터로 돈을 계산해야 한다는 것이
+    이 시스템의 모든 설계를 결정합니다.
+  </p>
+  <dl class="facts">
+    <div class="fact"><dt>처리 규모</dt><dd>평시 200 EPS · 피크 2,000 EPS</dd></div>
+    <div class="fact"><dt>정산 단위</dt><dd>CPM (1,000 임프레션당 단가)</dd></div>
+    <div class="fact"><dt>핵심 난제</dt><dd>유실 · 중복 · 지연 · 정합성</dd></div>
+  </dl>
+</header>
+
+<!-- ══════════════════════════════════════════════════════ 01 -->
+<section id="s1">
+  <div class="sec-head"><span class="sec-num">01</span><h2>무엇을 다루는 시스템인가</h2></div>
+
+  <p>
+    OTT에서 영상 중간에 광고가 나옵니다. 광고가 <strong>실제로 노출됐다는 증거</strong>를 모아야
+    광고주에게 돈을 받을 수 있습니다. 그 증거가 바로 이벤트입니다.
+  </p>
+
+  <h3>광고 1회에서 나오는 이벤트</h3>
+  <p>
+    광고 한 편이 재생되면 대략 이런 순서로 이벤트가 발생합니다.
+    업계 표준(VAST)이 정해 놓은 시퀀스입니다.
+  </p>
+  <ul>
+    <li><code>ad_request</code> — 플레이어가 "여기 광고 하나 주세요"</li>
+    <li><code>ad_response</code> — 서버가 "이 소재를 트세요"라고 확정</li>
+    <li><code>impression</code> — 광고가 화면에 떴다 <em>← 이게 곧 돈이다</em></li>
+    <li><code>quartile</code> — 25% / 50% / 75% / 완주 지점 통과</li>
+    <li><code>click</code> — 클릭 (약 10%)</li>
+  </ul>
+
+  <h3>왜 어려운가</h3>
+  <p>
+    이벤트를 만드는 곳은 <strong>남의 집 TV, 지하철의 폰, 통신사 셋톱박스</strong>입니다.
+    우리가 통제할 수 없는 환경이죠. 그래서 이런 일이 일상적으로 벌어집니다.
+  </p>
+  <ul>
+    <li>터널 진입 → 이벤트가 60초 뒤에 도착</li>
+    <li>앱의 재전송 로직 오류 → 같은 이벤트가 2번, 3번</li>
+    <li>광고 URL이 공개돼 있음 → 가짜 임프레션 대량 전송 (과금 사기)</li>
+    <li>우리 쪽 메시지 큐 장애 → 그동안 들어온 이벤트는?</li>
+  </ul>
+
+  <div class="callout">
+    <h4>이 시스템의 한 줄 정의</h4>
+    <p>
+      <strong>믿을 수 없는 소스에서 온 데이터로 돈을 계산하는 시스템.</strong>
+      하나를 놓치면 광고주에게 덜 청구하고, 하나를 더 세면 과금 사기가 됩니다.
+      그래서 "빠르게 보여주는 값"과 "정산에 쓰는 값"을 분리하는 것이 설계의 출발점입니다.
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ 02 -->
+<section id="s2">
+  <div class="sec-head"><span class="sec-num">02</span><h2>요구사항과 제약</h2></div>
+
+  <div class="tbl-scroll">
+    <table>
+      <thead>
+        <tr><th>구분</th><th>요구사항</th><th>설계에 미친 영향</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>가용성</strong></td>
+          <td>수집 API는 어떤 상황에서도 응답해야 한다</td>
+          <td>내부 장애 시에도 성공 응답 (fail-open)</td>
+        </tr>
+        <tr>
+          <td><strong>정확성</strong></td>
+          <td>정산 금액은 중복·유실 없이 확정돼야 한다</td>
+          <td>배치로 전체 범위를 다시 계산</td>
+        </tr>
+        <tr>
+          <td><strong>적시성</strong></td>
+          <td>운영자가 지금 상태를 볼 수 있어야 한다</td>
+          <td>실시간 스트림 처리로 1분 단위 집계</td>
+        </tr>
+        <tr>
+          <td><strong>추적성</strong></td>
+          <td>버려진 이벤트도 사유를 남겨야 한다</td>
+          <td>DLQ(불량 이벤트 전용 큐)에 원본과 사유 보관</td>
+        </tr>
+        <tr>
+          <td><strong>확장성</strong></td>
+          <td>피크(스포츠 중계)에 10배 트래픽</td>
+          <td>수집단 수평 확장 + 큐로 뒷단 보호</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    이 다섯 가지는 서로 충돌합니다. <strong>가용성과 정확성은 특히 정면으로 부딪힙니다.</strong>
+    "확실히 저장될 때까지 응답하지 않기"는 정확하지만 가용성을 해치고,
+    "일단 응답하고 나중에 정리하기"는 가용성을 지키지만 부정확합니다.
+    아래 설계 결정들은 대부분 이 충돌을 어디서 어떻게 타협했는가의 기록입니다.
+  </p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ 03 -->
+<section id="s3">
+  <div class="sec-head"><span class="sec-num">03</span><h2>전체 아키텍처</h2></div>
+
+  <p>
+    핵심은 <strong>같은 데이터를 두 갈래로 처리한다</strong>는 것입니다.
+    하나는 빠르지만 부정확하고, 하나는 느리지만 정확합니다. 둘 다 필요합니다.
+  </p>
+
+  <figure>
+    <div class="fig-frame">
+      <svg viewBox="0 0 1120 400" role="img"
+           aria-label="이벤트가 수집 API와 메시지 큐를 지나 두 갈래로 갈라지는 흐름도. 위쪽은 스트림 처리가 큐를 구독해 캐시와 대시보드로, 아래쪽은 적재 잡이 큐를 구독해 원본 저장소에 파일로 쓰고 배치 정산이 그 파일을 읽어 정산 DB로 간다. 마지막에 대사 단계가 두 결과를 비교한다.">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" opacity=".6"/>
+          </marker>
+          <marker id="ah-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+          </marker>
+        </defs>
+
+        <!-- 경로 라벨 -->
+        <text class="svg-t-hi" x="416" y="24">실시간 경로 — 운영 모니터링용 · 약 1분</text>
+        <text class="svg-t-sm" x="416" y="388">확정 경로 — 정산용 · 하루 1회</text>
+
+        <!-- 공통 구간 -->
+        <rect class="svg-box" x="8"   y="170" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="60"  y="194" text-anchor="middle">플레이어</text>
+        <text class="svg-t-sm" x="60" y="211" text-anchor="middle">TV · 모바일</text>
+
+        <rect class="svg-box" x="140" y="170" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="192" y="194" text-anchor="middle">수집 API</text>
+        <text class="svg-t-sm" x="192" y="211" text-anchor="middle">검증 · 라우팅</text>
+
+        <rect class="svg-box-hi" x="272" y="170" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="324" y="194" text-anchor="middle">메시지 큐</text>
+        <text class="svg-t-sm" x="324" y="211" text-anchor="middle">Kafka</text>
+
+        <!-- 실시간 경로 -->
+        <rect class="svg-box" x="416" y="48" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="468" y="72" text-anchor="middle">스트림 처리</text>
+        <text class="svg-t-sm" x="468" y="89" text-anchor="middle">Flink 잡 A</text>
+
+        <rect class="svg-box" x="548" y="48" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="600" y="72" text-anchor="middle">캐시</text>
+        <text class="svg-t-sm" x="600" y="89" text-anchor="middle">Redis</text>
+
+        <rect class="svg-box" x="680" y="48" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="732" y="72" text-anchor="middle">대시보드</text>
+        <text class="svg-t-sm" x="732" y="89" text-anchor="middle">운영 화면</text>
+
+        <!-- 확정 경로 -->
+        <rect class="svg-box-hi" x="416" y="278" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="468" y="302" text-anchor="middle">적재 잡</text>
+        <text class="svg-t-sm" x="468" y="319" text-anchor="middle">Flink 잡 B</text>
+
+        <rect class="svg-box" x="548" y="278" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="600" y="302" text-anchor="middle">원본 저장</text>
+        <text class="svg-t-sm" x="600" y="319" text-anchor="middle">S3 · Parquet</text>
+
+        <rect class="svg-box" x="680" y="278" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="732" y="302" text-anchor="middle">배치 정산</text>
+        <text class="svg-t-sm" x="732" y="319" text-anchor="middle">Spark</text>
+
+        <rect class="svg-box" x="812" y="278" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="864" y="302" text-anchor="middle">정산 DB</text>
+        <text class="svg-t-sm" x="864" y="319" text-anchor="middle">PostgreSQL</text>
+
+        <!-- 대사 -->
+        <rect class="svg-box-hi" x="968" y="170" width="104" height="56" rx="3"/>
+        <text class="svg-t" x="1020" y="194" text-anchor="middle">대사</text>
+        <text class="svg-t-sm" x="1020" y="211" text-anchor="middle">차이 설명</text>
+
+        <!-- 화살표: 공통 -->
+        <line class="svg-line" x1="112" y1="198" x2="134" y2="198" marker-end="url(#ah)"/>
+        <line class="svg-line" x1="244" y1="198" x2="266" y2="198" marker-end="url(#ah)"/>
+        <text class="svg-t-sm" x="192" y="240" text-anchor="middle">검증 후 발행</text>
+
+        <!-- 분기: 두 잡이 각자 구독한다 -->
+        <path class="svg-line-hi" d="M 376 190 C 396 190 396 76 410 76" marker-end="url(#ah-hi)"/>
+        <path class="svg-line-hi" d="M 376 206 C 396 206 396 306 410 306" marker-end="url(#ah-hi)"/>
+        <text class="svg-t-hi" x="330" y="146" text-anchor="middle">구독</text>
+        <text class="svg-t-hi" x="330" y="262" text-anchor="middle">구독</text>
+
+        <!-- 실시간 -->
+        <line class="svg-line" x1="520" y1="76" x2="542" y2="76" marker-end="url(#ah)"/>
+        <line class="svg-line" x1="652" y1="76" x2="674" y2="76" marker-end="url(#ah)"/>
+        <text class="svg-t-sm" x="468" y="126" text-anchor="middle">중복제거 · 1분 집계</text>
+
+        <!-- 확정 -->
+        <line class="svg-line" x1="520" y1="306" x2="542" y2="306" marker-end="url(#ah)"/>
+        <line class="svg-line" x1="652" y1="306" x2="674" y2="306" marker-end="url(#ah)"/>
+        <line class="svg-line" x1="784" y1="306" x2="806" y2="306" marker-end="url(#ah)"/>
+        <text class="svg-t-sm" x="468" y="356" text-anchor="middle">가공 없이 파일로 씀</text>
+        <text class="svg-t-sm" x="700" y="356" text-anchor="middle">파일을 읽어 재계산</text>
+
+        <!-- 대사로 합류 -->
+        <path class="svg-line-hi" d="M 784 76 C 940 76 940 180 962 186" marker-end="url(#ah-hi)"/>
+        <path class="svg-line-hi" d="M 916 306 C 946 306 946 216 962 210" marker-end="url(#ah-hi)"/>
+      </svg>
+    </div>
+    <figcaption>
+      큐에서 <strong>두 개의 잡이 각자 구독</strong>한다 — 큐가 나눠 주는 게 아니라
+      읽어 가는 쪽이 자기 속도로 가져간다. 위쪽은 1분 안에 결과가 나오지만 놓치는 게 있고,
+      아래쪽은 원본을 파일로 남겨 두었다가 하루에 한 번 전체를 다시 계산한다.
+      마지막 <strong>대사</strong> 단계가 두 값의 차이를 원인별로 설명한다.
+    </figcaption>
+  </figure>
+
+  <h3>큐에서 어떻게 가져가나</h3>
+  <p>
+    화살표만 보면 큐가 데이터를 <em>보내는</em> 것처럼 보이지만 반대입니다.
+    <strong>메시지 큐는 아무에게도 밀어 주지 않습니다.</strong> 읽어 가는 쪽이 가져갑니다.
+  </p>
+  <ul>
+    <li>
+      <strong>큐는 그냥 쌓아 둡니다.</strong> 누가 읽었든 상관없이 정해진 기간(예: 7일) 동안 보관합니다.
+      읽었다고 사라지지 않습니다.
+    </li>
+    <li>
+      <strong>읽는 쪽은 "어디까지 읽었는지"를 따로 기억합니다.</strong>
+      이 위치를 오프셋(offset)이라고 합니다. 잡마다 자기 오프셋이 있습니다.
+    </li>
+    <li>
+      그래서 <strong>여러 잡이 같은 데이터를 독립적으로 읽을 수 있습니다.</strong>
+      실시간 잡이 5,000번째를 읽고 있을 때 적재 잡은 4,200번째를 읽고 있어도 됩니다.
+      서로 영향을 주지 않습니다.
+    </li>
+    <li>
+      한쪽이 죽어도 다른 쪽은 멀쩡합니다. 죽었던 잡은 살아나서
+      <strong>기억해 둔 위치부터 이어서</strong> 읽습니다.
+    </li>
+  </ul>
+  <p>
+    이 구조 덕분에 <strong>분기가 공짜입니다.</strong> 데이터를 복사해서 두 곳에 보낼 필요도,
+    "누구에게 보낼지" 관리할 필요도 없습니다. 새 용도가 생기면 잡을 하나 더 만들어
+    같은 큐를 구독하기만 하면 됩니다.
+  </p>
+
+  <div class="callout">
+    <h4>S3는 스스로 가져오지 않는다</h4>
+    <p>
+      아래쪽 경로에서 흔히 오해하는 부분입니다. <strong>저장소는 수동적입니다.</strong>
+      누군가 파일을 써 줘야 하죠. 그래서 큐와 저장소 사이에는 반드시
+      <strong>"읽어서 파일로 쓰는 잡"</strong>이 하나 있습니다.
+    </p>
+    <p>
+      이 시스템에서는 그 역할도 스트림 처리 엔진이 맡았습니다 —
+      집계하는 잡(A)과 파일로 쓰는 잡(B)이 <em>서로 다른 잡</em>이고, 같은 큐를 각자 구독합니다.
+      전용 도구(Kafka Connect 등)를 쓸 수도 있지만, 이미 떠 있는 엔진을 재사용하는 편이
+      운영할 컴포넌트를 늘리지 않아 유리했습니다.
+    </p>
+  </div>
+
+  <h3>구성요소를 한 줄씩</h3>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>구성요소</th><th>역할</th><th>왜 이게 필요한가</th></tr></thead>
+      <tbody>
+        <tr><td><strong>수집 API</strong></td><td>이벤트 받기·검증·큐로 발행</td><td>유일한 외부 접점. 절대 죽으면 안 됨</td></tr>
+        <tr><td><strong>광고 결정 서버</strong></td><td>"이 자리에 어느 광고를?" 결정</td><td>서버가 확정한 사실의 출처</td></tr>
+        <tr><td><strong>메시지 큐</strong></td><td>완충재</td><td>뒷단이 느리거나 죽어도 데이터가 남음</td></tr>
+        <tr><td><strong>스트림 처리</strong></td><td>실시간 집계</td><td>지금 잘 돌아가는지 봐야 함</td></tr>
+        <tr><td><strong>캐시</strong></td><td>실시간 결과 보관</td><td>대시보드가 빠르게 읽어야 함</td></tr>
+        <tr><td><strong>적재 잡</strong></td><td>큐를 구독해 파일로 씀</td><td>저장소는 스스로 못 가져온다</td></tr>
+        <tr><td><strong>원본 저장소</strong></td><td>가공 전 데이터 보관</td><td>집계 로직이 바뀌면 다시 계산해야 함</td></tr>
+        <tr><td><strong>배치 처리</strong></td><td>확정 정산</td><td>전체를 봐야만 잡히는 문제가 있음</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ 04 -->
+<section id="s4">
+  <div class="sec-head"><span class="sec-num">04</span><h2>설계 결정 6가지</h2></div>
+  <p>각 결정마다 <strong>무엇을 얻고 무엇을 포기했는지</strong>를 같이 적었습니다.</p>
+
+  <!-- ① -->
+  <div class="decision">
+    <div class="d-head"><span class="d-tag">결정 1</span><h3 class="d-title">수집 API는 실패해도 성공이라 답한다</h3></div>
+    <p class="d-sub">fail-open</p>
+    <p>
+      메시지 큐가 죽었을 때 수집 API는 어떻게 해야 할까요?
+      에러를 돌려주면 플레이어가 재시도를 반복하고, 그 재시도가 몰리면 서비스 전체가 마비됩니다.
+      그래서 <strong>큐에 못 넣으면 로컬 디스크에 적어 두고 성공으로 응답</strong>합니다.
+      큐가 살아나면 그 파일을 다시 밀어 넣습니다.
+    </p>
+    <div class="procon">
+      <div class="pro">
+        <p class="pc-label">장점</p>
+        <ul>
+          <li><strong>사용자 경험이 끊기지 않는다.</strong> 광고 집계가 잠깐 틀려도 영상은 계속 나온다</li>
+          <li>장애가 뒷단에 갇힌다. 수집단 밖으로 번지지 않는다</li>
+          <li>데이터 유실이 사실상 없다</li>
+        </ul>
+      </div>
+      <div class="con">
+        <p class="pc-label">단점</p>
+        <ul>
+          <li><strong>장애 중 응답이 느려진다.</strong> 큐 응답을 기다리는 시간만큼 지연 (실측 약 3초)</li>
+          <li>복구가 자동이 아니다. 재적재를 사람이 실행해야 한다</li>
+          <li>디스크 쓰기까지 실패하면 그때는 정말 유실된다</li>
+          <li>재적재분이 중복을 만든다 → 뒷단이 처리해야 함</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ② -->
+  <div class="decision">
+    <div class="d-head"><span class="d-tag">결정 2</span><h3 class="d-title">모든 데이터는 큐를 한 번 거친다</h3></div>
+    <p class="d-sub">메시지 큐를 완충재로</p>
+    <p>
+      수집 API가 집계 로직을 직접 호출하지 않습니다. 큐에 넣기만 하고 끝냅니다.
+      집계는 큐를 구독해서 각자의 속도로 처리합니다.
+      <strong>보내는 쪽과 받는 쪽의 속도를 분리</strong>하는 것이 목적입니다.
+    </p>
+    <div class="procon">
+      <div class="pro">
+        <p class="pc-label">장점</p>
+        <ul>
+          <li><strong>피크를 흡수한다.</strong> 초당 2,000건이 들어와도 큐에 쌓이고 뒷단은 자기 속도로 처리</li>
+          <li>소비자를 추가하기 쉽다. 실시간·배치·감사 로그가 같은 데이터를 각자 읽는다</li>
+          <li>뒷단을 재배포해도 데이터가 안 사라진다</li>
+          <li>버그 수정 후 <strong>과거 데이터를 다시 처리</strong>할 수 있다</li>
+        </ul>
+      </div>
+      <div class="con">
+        <p class="pc-label">단점</p>
+        <ul>
+          <li><strong>실시간이 아니게 된다.</strong> 큐를 거치는 만큼 지연이 붙는다</li>
+          <li>운영할 컴포넌트가 하나 더 늘어난다 (클러스터·모니터링·용량 관리)</li>
+          <li>보관 기간이 지나면 데이터가 사라진다. 설정 실수가 곧 유실</li>
+          <li>순서 보장이 파티션 단위로만 된다. 설계 시 파티션 키를 잘 골라야 함</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ③ -->
+  <div class="decision">
+    <div class="d-head"><span class="d-tag">결정 3</span><h3 class="d-title">서버가 확정한 사실은 DB를 거쳐 나간다</h3></div>
+    <p class="d-sub">Outbox 패턴</p>
+    <p>
+      "어느 광고를 틀지"는 서버가 결정합니다. 이건 정산의 기준이 되는 중요한 사실이라
+      절대 잃으면 안 됩니다. 그런데 <strong>DB 저장과 큐 발행은 하나의 트랜잭션으로 묶을 수 없습니다.</strong>
+      "DB는 저장됐는데 큐 발행 실패" 또는 그 반대가 생기죠.
+    </p>
+    <p>
+      그래서 결정과 동시에 <strong>같은 DB 트랜잭션 안에서 발송함(outbox) 테이블에 기록</strong>만 합니다.
+      별도 워커가 그 테이블을 주기적으로 읽어 큐로 옮기고 "보냄" 표시를 합니다.
+    </p>
+    <div class="procon">
+      <div class="pro">
+        <p class="pc-label">장점</p>
+        <ul>
+          <li><strong>유실이 원천적으로 없다.</strong> DB에 커밋됐으면 언젠가는 반드시 발행된다</li>
+          <li>큐가 죽어도 서비스는 정상 응답. 워커가 알아서 따라잡는다</li>
+          <li>발송 이력이 DB에 남아 감사·재발행이 쉽다</li>
+        </ul>
+      </div>
+      <div class="con">
+        <p class="pc-label">단점</p>
+        <ul>
+          <li><strong>중복이 반드시 생긴다.</strong> 발행 후 "보냄" 표시에 실패하면 다음 폴링에서 또 보낸다</li>
+          <li>폴링 주기만큼 지연이 붙는다 (약 0.5초)</li>
+          <li>DB에 쓰기 부하가 추가된다</li>
+          <li>워커를 여러 대 띄우면 행 잠금 처리가 필요해 복잡해진다</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout">
+      <h4>여기서 나온 원칙</h4>
+      <p>
+        분산 시스템에서 <strong>"정확히 한 번(exactly-once)"은 대체로 마케팅 문구</strong>입니다.
+        현실적인 선택은 <em>최소 한 번 보내고, 받는 쪽에서 중복을 제거</em>하는 것입니다.
+        중복은 지울 수 있지만 사라진 데이터는 못 되살리니까요.
+      </p>
+    </div>
+  </div>
+
+  <!-- ④ -->
+  <div class="decision">
+    <div class="d-head"><span class="d-tag">결정 4</span><h3 class="d-title">실시간과 배치를 나눈다</h3></div>
+    <p class="d-sub">람다 아키텍처</p>
+    <p>
+      같은 데이터를 두 번 처리합니다. 낭비처럼 보이지만
+      <strong>두 경로가 답하는 질문이 다릅니다.</strong>
+    </p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th></th><th>실시간 경로</th><th>확정 경로</th></tr></thead>
+        <tbody>
+          <tr><td><strong>질문</strong></td><td>지금 잘 돌아가나?</td><td>얼마를 청구하나?</td></tr>
+          <tr><td><strong>주기</strong></td><td>1분</td><td>하루 1회</td></tr>
+          <tr><td><strong>보는 범위</strong></td><td>최근 1시간 (메모리 한계)</td><td>전체</td></tr>
+          <tr><td><strong>정확도</strong></td><td>대략</td><td>확정</td></tr>
+          <tr><td><strong>쓰는 사람</strong></td><td>운영자</td><td>정산 담당</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="procon">
+      <div class="pro">
+        <p class="pc-label">장점</p>
+        <ul>
+          <li><strong>속도와 정확성을 둘 다 얻는다.</strong> 하나로는 불가능한 조합</li>
+          <li>배치가 실시간의 실수를 덮어쓴다. 실시간에 버그가 있어도 정산은 안전</li>
+          <li>집계 기준이 바뀌면 원본으로 전체를 다시 계산할 수 있다</li>
+        </ul>
+      </div>
+      <div class="con">
+        <p class="pc-label">단점</p>
+        <ul>
+          <li><strong>같은 로직을 두 번 구현한다.</strong> 스트림 코드와 배치 코드가 어긋나면 원인 찾기 어렵다</li>
+          <li>운영 대상이 2배. 장애 지점도 2배</li>
+          <li>두 숫자가 다를 때 "어느 게 맞냐"는 질문이 반드시 나온다</li>
+          <li>저장 비용이 늘어난다 (원본 + 집계 결과)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑤ -->
+  <div class="decision">
+    <div class="d-head"><span class="d-tag">결정 5</span><h3 class="d-title">중복 제거를 두 단계로 나눈다</h3></div>
+    <p class="d-sub">이 시스템에서 가장 까다로운 부분</p>
+    <p>
+      중복에는 <strong>성격이 다른 두 종류</strong>가 있고, 잡는 방법도 다릅니다.
+    </p>
+    <ul>
+      <li><strong>(A) 재전송 중복</strong> — 앱이 같은 이벤트를 두 번 보냄. 이벤트 ID가 <em>같다</em></li>
+      <li><strong>(B) SSAI 이중경로</strong> — 서버가 영상에 광고를 끼워 넣는 방식(Server-Side Ad Insertion)에서는
+          "봤다"는 신호를 플레이어도 보내고 서버도 보냅니다. 같은 광고 1회인데
+          이벤트 ID가 <em>다릅니다</em></li>
+    </ul>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 940 310" role="img"
+             aria-label="재전송 중복은 실시간 단계에서 2건이 1건으로 줄지만, SSAI 이중경로는 이벤트 ID가 달라 실시간에서 2건으로 남고 배치 단계에서야 1건으로 줄어드는 비교도">
+          <defs>
+            <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" opacity=".6"/>
+            </marker>
+            <marker id="ah2-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+            </marker>
+          </defs>
+
+          <text class="svg-t-sm" x="104" y="20" text-anchor="middle">들어온 이벤트</text>
+          <text class="svg-t-sm" x="388" y="20" text-anchor="middle">스트림 처리 (Flink 잡 A)</text>
+          <text class="svg-t-hi" x="388" y="36" text-anchor="middle">event_id 로 묶음</text>
+          <text class="svg-t-sm" x="672" y="20" text-anchor="middle">배치 정산 (Spark)</text>
+          <text class="svg-t-hi" x="672" y="36" text-anchor="middle">ad_request_id 로 묶음</text>
+          <text class="svg-t-sm" x="858" y="20" text-anchor="middle">확정</text>
+
+          <!-- (A) -->
+          <rect class="svg-box" x="16" y="56" width="176" height="64" rx="3"/>
+          <text class="svg-t" x="104" y="82" text-anchor="middle">(A) 재전송</text>
+          <text class="svg-t-sm" x="104" y="101" text-anchor="middle">event_id 같음</text>
+
+          <rect class="svg-box" x="300" y="56" width="176" height="64" rx="3"/>
+          <text class="svg-t" x="388" y="82" text-anchor="middle">여기서 제거</text>
+          <text class="svg-t-sm" x="388" y="101" text-anchor="middle">2건 → 1건</text>
+
+          <rect class="svg-box" x="584" y="56" width="176" height="64" rx="3"/>
+          <text class="svg-t" x="672" y="94" text-anchor="middle">할 일 없음</text>
+
+          <line class="svg-line" x1="192" y1="88" x2="294" y2="88" marker-end="url(#ah2)"/>
+          <text class="svg-t-sm" x="243" y="80" text-anchor="middle">2건</text>
+          <line class="svg-line" x1="476" y1="88" x2="578" y2="88" marker-end="url(#ah2)"/>
+          <text class="svg-t-sm" x="527" y="80" text-anchor="middle">1건</text>
+          <line class="svg-line" x1="760" y1="88" x2="820" y2="88" marker-end="url(#ah2)"/>
+          <text class="svg-t" x="858" y="93" text-anchor="middle">1건</text>
+
+          <!-- (B) -->
+          <rect class="svg-box" x="16" y="180" width="176" height="64" rx="3"/>
+          <text class="svg-t" x="104" y="206" text-anchor="middle">(B) SSAI 이중경로</text>
+          <text class="svg-t-sm" x="104" y="225" text-anchor="middle">event_id 다름</text>
+
+          <rect class="svg-box" x="300" y="180" width="176" height="64" rx="3"/>
+          <text class="svg-t" x="388" y="206" text-anchor="middle">못 잡는다</text>
+          <text class="svg-t-sm" x="388" y="225" text-anchor="middle">2건 그대로</text>
+
+          <rect class="svg-box-hi" x="584" y="180" width="176" height="64" rx="3"/>
+          <text class="svg-t" x="672" y="206" text-anchor="middle">여기서 제거</text>
+          <text class="svg-t-sm" x="672" y="225" text-anchor="middle">2건 → 1건 (server 채택)</text>
+
+          <line class="svg-line" x1="192" y1="212" x2="294" y2="212" marker-end="url(#ah2)"/>
+          <text class="svg-t-sm" x="243" y="204" text-anchor="middle">2건</text>
+          <line class="svg-line-hi" x1="476" y1="212" x2="578" y2="212" marker-end="url(#ah2-hi)"/>
+          <text class="svg-t-hi" x="527" y="204" text-anchor="middle">2건</text>
+          <line class="svg-line" x1="760" y1="212" x2="820" y2="212" marker-end="url(#ah2)"/>
+          <text class="svg-t" x="858" y="217" text-anchor="middle">1건</text>
+
+          <text class="svg-t-hi" x="527" y="276" text-anchor="middle">← 이 구간에서 실시간 집계가 부풀어 있다</text>
+        </svg>
+      </div>
+      <figcaption>
+        같은 "2건"인데 실시간 결과가 다르다. 실시간은 <code>event_id</code>로 묶어 (A)만 잡고,
+        배치는 <code>ad_request_id</code>(광고 1회의 고유번호)로 묶어 (B)까지 잡는다.
+        강조된 구간이 실시간 집계가 실제보다 크게 나오는 지점이다.
+      </figcaption>
+    </figure>
+
+    <h4>"여기서 제거"가 정확히 어디인가</h4>
+    <p>
+      두 지점 모두 <strong>전체 아키텍처 그림(03장)에 이미 있는 박스</strong>입니다. 새 컴포넌트가 아닙니다.
+    </p>
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>단계</th><th>어느 박스인가</th><th>언제</th><th>무엇으로 묶나</th><th>무엇을 남기나</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>(A) 제거</strong></td>
+            <td>위쪽 경로의 <strong>스트림 처리</strong><br>Flink 잡 A</td>
+            <td>이벤트 도착 즉시</td>
+            <td><code>event_id</code></td>
+            <td>제일 먼저 온 1건</td>
+          </tr>
+          <tr>
+            <td><strong>(B) 제거</strong></td>
+            <td>아래쪽 경로의 <strong>배치 정산</strong><br>Spark</td>
+            <td>하루 1회 · 전체 재계산</td>
+            <td><code>ad_request_id</code></td>
+            <td>우선순위 높은 1건<br>(server &gt; client)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <strong>(B)에서 왜 서버 쪽을 남기나요?</strong>
+      광고 차단기가 켜져 있으면 플레이어가 보내는 신호는 막히지만 서버가 직접 찍는 신호는 그대로 옵니다.
+      <strong>서버 쪽이 더 믿을 만하기 때문</strong>입니다. 이 우선순위는 설정값이라
+      SSAI 구성에 따라 바꿀 수 있습니다.
+    </p>
+
+    <div class="callout">
+      <h4>배치만 할 수 있는 이유</h4>
+      <p>
+        배치는 하루치 원본 파일을 전부 읽어
+        <strong>같은 광고 요청 번호를 가진 노출을 한 덩어리로 모은 뒤 딱 하나만 남깁니다.</strong>
+      </p>
+      <p>
+        실시간은 이걸 못 합니다. 이벤트를 하나씩 흘려보내며 처리하기 때문에
+        <em>"이 광고 요청에 노출이 총 몇 개 올 것인가"를 알 수 없기</em> 때문입니다.
+        두 번째 노출이 1초 뒤에 올지, 5분 뒤에 올지, 아예 안 올지 모르는 상태에서
+        "지금 들어온 이것을 셀지 말지" 결정해야 하죠.
+        전체를 한 번에 볼 수 있는 쪽에서만 가능한 판단입니다.
+      </p>
+    </div>
+
+    <div class="procon">
+      <div class="pro">
+        <p class="pc-label">장점</p>
+        <ul>
+          <li><strong>싼 것부터 거른다.</strong> 대부분의 중복은 실시간 단계에서 저렴하게 제거</li>
+          <li>실시간이 못 잡는 것도 결국 정산에서는 정리된다</li>
+          <li>어느 단계가 무엇을 걸렀는지 계측 가능 → 이상 징후를 조기에 발견</li>
+        </ul>
+      </div>
+      <div class="con">
+        <p class="pc-label">단점</p>
+        <ul>
+          <li><strong>실시간 값을 그대로 믿으면 안 된다.</strong> 항상 실제보다 크다</li>
+          <li>중복 기준이 두 개(이벤트 ID / 광고 요청 ID)라 로직이 복잡</li>
+          <li>실시간은 메모리 한계상 최근 1시간만 본다. 그보다 늦은 재전송은 못 잡는다</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑥ -->
+  <div class="decision">
+    <div class="d-head"><span class="d-tag">결정 6</span><h3 class="d-title">언제까지 기다릴지 미리 정한다</h3></div>
+    <p class="d-sub">워터마크 (watermark)</p>
+    <p>
+      1분 단위로 집계한다고 합시다. 10:05분 집계를 언제 마감해야 할까요?
+      늦게 오는 이벤트가 있으니 조금 기다려야 하는데, <strong>영원히 기다릴 수는 없습니다.</strong>
+      "10초까지는 기다려 준다"고 정한 것이 워터마크입니다.
+    </p>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 900 230" role="img"
+             aria-label="10시 5분 집계 구간과 10초 뒤 마감선을 표시한 시간축. 마감 전에 도착한 지연 이벤트는 집계에 포함되고, 마감 후 도착한 이벤트는 지각 처리되는 그림">
+          <defs>
+            <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" opacity=".55"/>
+            </marker>
+            <marker id="ah3-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+            </marker>
+          </defs>
+
+          <!-- 집계 구간 -->
+          <rect x="100" y="132" width="360" height="26" fill="var(--surface-2)" stroke="currentColor" stroke-width="1" opacity=".9"/>
+          <text class="svg-t-sm" x="280" y="150" text-anchor="middle">10:05 집계 구간</text>
+
+          <!-- 시간축 -->
+          <line class="svg-line" x1="60" y1="158" x2="850" y2="158" marker-end="url(#ah3)"/>
+          <text class="svg-t-sm" x="100" y="178" text-anchor="middle">10:05:00</text>
+          <text class="svg-t-sm" x="460" y="178" text-anchor="middle">10:06:00</text>
+          <text class="svg-t-sm" x="820" y="178" text-anchor="middle">10:07:00</text>
+          <text class="svg-t-sm" x="856" y="152" text-anchor="start">시간</text>
+
+          <!-- 마감선 -->
+          <line x1="520" y1="46" x2="520" y2="168" stroke="var(--accent)" stroke-width="1.6" stroke-dasharray="5 4"/>
+          <text class="svg-t-hi" x="528" y="58">마감 (구간 끝 + 10초)</text>
+
+          <!-- 이벤트 1: 마감 전 도착 -->
+          <circle cx="340" cy="158" r="4.5" fill="currentColor"/>
+          <path class="svg-line" d="M 486 100 C 440 100 380 118 344 150" marker-end="url(#ah3)"/>
+          <circle cx="490" cy="98" r="4.5" fill="currentColor"/>
+          <text class="svg-t" x="500" y="94" text-anchor="start">마감 전 도착 → 집계에 포함</text>
+
+          <!-- 이벤트 2: 마감 후 도착 -->
+          <circle cx="400" cy="158" r="4.5" fill="var(--accent)"/>
+          <path class="svg-line-hi" d="M 696 208 C 620 208 470 200 404 168" marker-end="url(#ah3-hi)"/>
+          <circle cx="700" cy="208" r="4.5" fill="var(--accent)"/>
+          <text class="svg-t-hi" x="710" y="212" text-anchor="start">마감 후 → 지각 처리</text>
+        </svg>
+      </div>
+      <figcaption>
+        점의 왼쪽 위치는 <strong>이벤트가 발생한 시각</strong>, 화살표 출발점은
+        <strong>서버에 도착한 시각</strong>이다. 둘 다 10:05 구간에 속하지만
+        마감선을 넘겨 도착한 쪽은 실시간 집계에서 빠진다.
+        버리지 않고 별도 큐에 모아 두었다가 배치가 챙긴다.
+      </figcaption>
+    </figure>
+
+    <div class="procon">
+      <div class="pro">
+        <p class="pc-label">장점</p>
+        <ul>
+          <li><strong>결과가 언제 나올지 예측 가능하다.</strong> 무한정 기다리지 않는다</li>
+          <li>메모리 사용량이 제한된다. 마감된 구간은 잊어도 된다</li>
+          <li>지각 이벤트를 버리지 않고 따로 모아 두므로 나중에 만회 가능</li>
+        </ul>
+      </div>
+      <div class="con">
+        <p class="pc-label">단점</p>
+        <ul>
+          <li><strong>실시간 값은 항상 과소 집계다.</strong> 늦게 온 만큼 빠져 있다</li>
+          <li>대기 시간을 늘리면 정확해지지만 그만큼 느려진다. 정답이 없는 튜닝</li>
+          <li>트래픽이 없으면 시계가 멈춘다 → 마지막 구간이 영원히 마감되지 않는 함정</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑦ -->
+  <div class="decision">
+    <div class="d-head"><span class="d-tag">결정 7</span><h3 class="d-title">두 숫자가 다른 이유를 설명하는 잡을 따로 둔다</h3></div>
+    <p class="d-sub">대사 (reconciliation)</p>
+    <p>
+      실시간 852건, 확정 859건. <strong>다른 게 정상입니다.</strong>
+      중요한 건 <em>왜</em> 다른지 설명할 수 있느냐입니다. 설명할 수 없으면 그때부터 사고죠.
+    </p>
+    <p>그래서 매일 두 값을 비교하고 차이를 원인별로 쪼개는 잡을 돌립니다.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>원인</th><th>방향</th><th>설명</th></tr></thead>
+        <tbody>
+          <tr><td>지연 반영</td><td class="yes">확정 &gt; 실시간</td><td>실시간이 놓친 지각 이벤트를 배치가 포함</td></tr>
+          <tr><td>SSAI 이중경로</td><td class="no">확정 &lt; 실시간</td><td>실시간이 2번 센 것을 배치가 1번으로 정리</td></tr>
+          <tr><td>중복 제거 범위</td><td class="no">확정 &lt; 실시간</td><td>실시간이 못 본 장기 중복을 배치가 제거</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="procon">
+      <div class="pro">
+        <p class="pc-label">장점</p>
+        <ul>
+          <li><strong>"숫자가 이상한데요"에 답할 수 있다.</strong> 차이가 설계된 것인지 사고인지 구분 가능</li>
+          <li>설명되지 않는 잔차가 커지면 그게 곧 장애 신호</li>
+          <li>정산 분쟁 시 근거 자료가 된다</li>
+        </ul>
+      </div>
+      <div class="con">
+        <p class="pc-label">단점</p>
+        <ul>
+          <li>또 하나의 잡을 운영해야 한다</li>
+          <li>원인 분류 로직 자체가 틀릴 수 있다. 이것도 검증 대상</li>
+          <li>차이를 <strong>줄이지는 못한다.</strong> 설명할 뿐이다</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout">
+      <h4>여기서 배운 것</h4>
+      <p>
+        원인 두 개가 <strong>서로 반대 방향</strong>이라, 총합만 보면 상쇄돼 "차이 1%, 정상"으로 보입니다.
+        하지만 캠페인별로 쪼개면 부호가 갈립니다.
+        <strong>합계만 보고 정합하다고 판단하면 안 되는 이유</strong>가 여기 있습니다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ 05 -->
+<section id="s5">
+  <div class="sec-head"><span class="sec-num">05</span><h2>트레이드오프 정리</h2></div>
+  <p>이 시스템이 내린 선택을 한 장으로 요약하면 이렇습니다.</p>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>선택</th><th>얻은 것</th><th>포기한 것</th></tr></thead>
+      <tbody>
+        <tr><td>fail-open 수집</td><td>가용성</td><td>즉시 정합성 · 자동 복구</td></tr>
+        <tr><td>메시지 큐 경유</td><td>피크 흡수 · 재처리 가능</td><td>지연 · 운영 복잡도</td></tr>
+        <tr><td>Outbox 패턴</td><td>유실 없음</td><td>중복 발생 · 발행 지연</td></tr>
+        <tr><td>실시간 + 배치 이중화</td><td>속도와 정확성 동시 확보</td><td>구현·운영 비용 2배</td></tr>
+        <tr><td>2단계 중복 제거</td><td>비용 효율 · 최종 정확성</td><td>실시간 값의 신뢰도 저하</td></tr>
+        <tr><td>워터마크 10초</td><td>예측 가능한 응답 시간</td><td>지각 이벤트 누락</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout">
+    <h4>관통하는 원칙 하나</h4>
+    <p>
+      <strong>모든 결정이 "유실 vs 중복" 중에서 중복을 택했습니다.</strong>
+      중복은 뒤에서 지울 수 있지만, 사라진 데이터는 어디서도 복구할 수 없기 때문입니다.
+      그 대가로 파이프라인 전체가 <em>중복이 있다는 전제</em> 위에 설계돼 있습니다.
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ 06 -->
+<section id="s6">
+  <div class="sec-head"><span class="sec-num">06</span><h2>이 설계의 한계</h2></div>
+  <p>솔직하게 짚으면 이런 약점이 있습니다.</p>
+  <ul>
+    <li>
+      <strong>로직이 두 벌이다.</strong> 실시간과 배치가 같은 집계를 다르게 구현합니다.
+      한쪽만 고치면 두 값의 차이가 조용히 벌어집니다. 정기 대사로 감지는 하지만 예방은 못 합니다.
+      → 개선하려면 하나의 정의에서 두 코드를 생성하거나, Kappa 아키텍처(스트림 하나로 통일)를 검토
+    </li>
+    <li>
+      <strong>실시간 상태가 메모리에 의존한다.</strong> 최근 1시간 분량의 이벤트 ID를 들고 있어야 해서,
+      트래픽이 커지면 메모리가 먼저 한계에 닿습니다.
+      → 디스크 기반 상태 저장소로 전환 (대신 지연이 늘어남)
+    </li>
+    <li>
+      <strong>수집단 복구가 수동이다.</strong> 장애 후 재적재를 사람이 실행합니다.
+      → 자동 재적재 + 재적재 중 중복 방지 설계 필요
+    </li>
+    <li>
+      <strong>단일 지역 구성이다.</strong> 지역 장애 시 대안이 없습니다.
+      → 멀티 리전은 데이터 일관성 문제가 새로 생겨 난이도가 크게 올라감
+    </li>
+    <li>
+      <strong>이상 감지가 원인을 구분하지 못한다.</strong> "노출 비율이 떨어졌다"는 알림이
+      광고 사기 때문인지 플레이어 장애 때문인지 알려주지 않습니다.
+      → 여러 지표를 조합한 판정 규칙 필요
+    </li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ 07 -->
+<section id="s7">
+  <div class="sec-head"><span class="sec-num">07</span><h2>예상 질문</h2></div>
+  <p>발표 후 나올 법한 질문과 답변 방향입니다.</p>
+
+  <div class="qa">
+    <details>
+      <summary>실시간 집계가 부정확하다면 굳이 왜 만드나요?</summary>
+      <div class="ans">
+        <p>
+          정산에 쓰려는 게 아니라 <strong>운영 모니터링용</strong>입니다.
+          "지금 광고가 정상적으로 나가고 있나", "특정 캠페인의 노출이 갑자기 끊겼나"는
+          하루 뒤에 알면 늦습니다. 예산 소진 제어처럼 즉시 반응해야 하는 기능도 여기 붙습니다.
+        </p>
+        <p>
+          정확도가 필요한 곳(정산)과 속도가 필요한 곳(운영)을 분리한 것이지,
+          부정확한 값을 정산에 쓰는 게 아닙니다.
+        </p>
+      </div>
+    </details>
+
+    <details>
+      <summary>중복 제거를 배치에서만 하면 안 되나요?</summary>
+      <div class="ans">
+        <p>
+          가능하지만 실시간 대시보드가 쓸모없어집니다.
+          재전송 중복이 5%만 섞여도 운영자가 보는 숫자가 계속 흔들리거든요.
+        </p>
+        <p>
+          비용 관점에서도 실시간에서 미리 거르는 편이 낫습니다.
+          걸러낸 만큼 뒤로 흘러가는 데이터가 줄어드니까요.
+        </p>
+      </div>
+    </details>
+
+    <details>
+      <summary>정확히 한 번(exactly-once) 처리를 하면 되지 않나요?</summary>
+      <div class="ans">
+        <p>
+          스트림 엔진 <strong>내부</strong>에서는 가능합니다. 체크포인트와 트랜잭션으로 보장하죠.
+          하지만 이 시스템의 중복은 대부분 <strong>엔진 밖에서</strong> 발생합니다 —
+          앱의 재전송, SSAI 이중 비콘, 장애 복구 시 재적재.
+        </p>
+        <p>
+          엔진의 exactly-once는 이걸 막지 못합니다.
+          결국 비즈니스 키(이벤트 ID, 광고 요청 ID)로 애플리케이션 레벨에서 중복을 제거해야 합니다.
+        </p>
+      </div>
+    </details>
+
+    <details>
+      <summary>워터마크를 왜 10초로 정했나요?</summary>
+      <div class="ans">
+        <p>
+          정답이 있는 값이 아니라 <strong>측정해서 정하는 값</strong>입니다.
+          실제 도착 지연 분포를 보고 "몇 %를 커버할 것인가"를 결정합니다.
+        </p>
+        <p>
+          늘리면 정확해지지만 대시보드가 느려지고, 줄이면 빠르지만 누락이 늘어납니다.
+          이 시스템은 운영 모니터링용이라 속도 쪽으로 기울였고,
+          놓친 이벤트는 배치가 메우도록 설계했습니다.
+        </p>
+      </div>
+    </details>
+
+    <details>
+      <summary>트래픽이 10배가 되면 어디가 먼저 터지나요?</summary>
+      <div class="ans">
+        <p>
+          <strong>스트림 처리의 상태 저장소</strong>입니다.
+          최근 1시간의 이벤트 ID를 들고 있어야 하는데, 이게 메모리에 있으면 선형으로 늘어납니다.
+        </p>
+        <p>
+          수집단은 인스턴스를 늘리면 되고, 메시지 큐는 파티션을 늘리면 됩니다.
+          둘 다 수평 확장이 쉬운 구조입니다. 상태를 가진 쪽이 항상 먼저 병목이 됩니다.
+        </p>
+      </div>
+    </details>
+
+    <details>
+      <summary>가짜 이벤트로 과금 사기를 시도하면 어떻게 막나요?</summary>
+      <div class="ans">
+        <p>
+          트래킹 URL에 <strong>서명과 만료 시각</strong>을 넣습니다.
+          서명이 맞지 않으면 집계에 넣지 않고 별도 큐로 격리합니다.
+        </p>
+        <p>
+          한 가지 주의할 점은 <strong>HTTP 상태 코드로 막으면 안 된다</strong>는 것입니다.
+          4xx를 돌려주면 정상 플레이어가 재시도를 반복해 트래픽이 폭증합니다.
+          응답은 정상적으로 주되 집계에서만 빼는 방식이 안전합니다.
+        </p>
+      </div>
+    </details>
+
+    <details>
+      <summary>이 구조를 더 단순하게 만들 수 있나요?</summary>
+      <div class="ans">
+        <p>
+          규모가 작다면 배치 하나로 충분합니다. 실시간 경로 전체가 없어도 정산은 됩니다.
+          실시간을 추가하는 순간 운영 부담과 "두 숫자가 다른 문제"가 따라옵니다.
+        </p>
+        <p>
+          반대로 규모가 커지면 Kappa 아키텍처로 스트림 하나만 남기고,
+          재처리가 필요하면 큐를 처음부터 다시 읽는 방식도 있습니다.
+          로직이 한 벌이라 관리가 쉽지만 재처리 비용이 큽니다.
+        </p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<footer>
+  <p>
+    이 문서는 개념 설명에 초점을 맞췄습니다. 구현 세부(사용 기술의 버전, 설정값, 코드 구조)는
+    구두로 보충하거나 별도 자료로 준비하는 것을 권합니다.
+  </p>
+</footer>
+
+</main>
+</div>
