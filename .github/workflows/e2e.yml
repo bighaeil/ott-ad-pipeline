@@ -37,7 +37,10 @@ jobs:
         run: docker compose build
 
       - name: E2E
-        run: E2E_DOWN=0 bash scripts/e2e.sh
+        run: |
+          set -o pipefail
+          mkdir -p data/e2e
+          E2E_DOWN=0 bash scripts/e2e.sh 2>&1 | tee data/e2e/run.log
 
       - name: 실패 시 컨테이너 로그 모으기
         if: failure()
@@ -46,6 +49,21 @@ jobs:
           for s in $(docker compose ps --services); do
             docker compose logs --no-color --tail=300 "$s" > "data/e2e/containers/$s.log" 2>&1 || true
           done
+
+      - name: 실패 원인을 실행 요약에 표시
+        # 로그 화면은 로그인해야 보이지만 annotation 은 실행 요약에 바로 보인다.
+        # 마지막으로 쓰인 로그 몇 개의 끝부분을 올린다.
+        if: failure()
+        run: |
+          python - <<'EOF'
+          import glob, os
+          files = sorted(glob.glob("data/e2e/*.log") + glob.glob("data/e2e/containers/*.log"),
+                         key=os.path.getmtime, reverse=True)[:4]
+          for f in files:
+              tail = open(f, encoding="utf-8", errors="replace").read().splitlines()[-25:]
+              body = "\n".join(tail).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+              print(f"::error title={f}::{body}")
+          EOF
 
       - name: 로그 업로드
         if: always()
