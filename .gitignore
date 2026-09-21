@@ -17,3 +17,4 @@ ad-decision/.gradle/
 
 # 문서 캡처용 venv (scripts/capture/README.md)
 .venv-capture/
+data/e2e/

@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# E2E — 전체 스택(약 3 GiB)을 러너에 띄우고 scripts/e2e.sh 를 돌린다. 15분 안팎.
+# 이벤트를 넣고 수집 -> Kafka -> Flink -> Redis / MinIO -> Spark -> 대사 까지 정확한 숫자로 확인한다.
+# 문서만 바뀐 push 에서는 돌지 않는다.
+# ---------------------------------------------------------------------------
+name: E2E
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  schedule:
+    - cron: "0 1 * * 1"     # 매주 월요일 10:00 KST — 코드가 안 바뀌어도 외부 이미지·JAR 가 깨졌는지 본다
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 스택 이미지 빌드
+        run: docker compose build
+
+      - name: E2E
+        run: E2E_DOWN=0 bash scripts/e2e.sh
+
+      - name: 실패 시 컨테이너 로그 모으기
+        if: failure()
+        run: |
+          mkdir -p data/e2e/containers
+          for s in $(docker compose ps --services); do
+            docker compose logs --no-color --tail=300 "$s" > "data/e2e/containers/$s.log" 2>&1 || true
+          done
+
+      - name: 로그 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: data/e2e/
+          retention-days: 7
+
+      - name: 정리
+        if: always()
+        run: docker compose --profile batch --profile load down -v --remove-orphans

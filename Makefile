@@ -11,7 +11,7 @@ export MSYS2_ARG_CONV_EXCL := *
 DC := docker compose
 
 .DEFAULT_GOAL := help
-.PHONY: help up down restart clean ps logs health topics consume dash observe smoke flink flink-cancel archive flush load batch recon scenario-live scenario-kafka-down scenario-flink-kill scenario-burst scenario-tamper psql redis-cli
+.PHONY: help up down restart clean ps logs health topics consume dash observe smoke flink flink-cancel archive flush load batch recon scenario-live scenario-kafka-down scenario-flink-kill scenario-burst scenario-tamper psql redis-cli e2e
 
 help: ## 사용 가능한 타깃
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS=":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -19,6 +19,9 @@ help: ## 사용 가능한 타깃
 .env: ## (.env 가 없을 때만) .env.example 을 복사
 	cp .env.example .env
 	@echo ".env 를 .env.example 에서 만들었습니다."
+
+e2e: .env ## E2E 테스트 (기동 -> 이벤트 주입 -> 배치·대사 -> 26개 검사, 약 7분)
+	bash scripts/e2e.sh
 
 up: .env ## 전체 기동 (collector 는 빌드 포함)
 	$(DC) up -d --build

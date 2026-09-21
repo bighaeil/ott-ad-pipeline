@@ -1877,6 +1877,8 @@ Makefile / make.ps1        조작 진입점 (make 없는 Windows 용 래퍼 포�
 scripts/capture/           문서 스크린샷(docs/img) 재촬영 스크립트 + 상황별 순서
 .github/workflows/          CI — ci.yml(push/PR: 문서 링크·문법·줄바꿈·이미지 빌드), links.yml(주 1회 외부 링크)
 scripts/ci/check_docs.py   Markdown 상대 링크·이미지·앵커 검사 (로컬에서도 실행 가능)
+scripts/e2e.sh             E2E 테스트 진입점 (make e2e)
+tests/e2e/                 E2E 검사 스크립트 — 넣는 이벤트와 기대값이 파일 맨 위에 있다
 README.md                  이 문서
 
 collector/                 Kotlin + Spring Boot WebFlux (수집 API, fail-open)
@@ -1930,6 +1932,8 @@ push 와 PR 마다 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 이 �
 | Compose 설정 (`.env` 없이) | `.env` 에만 있던 값에 기대는 설정 | 프로젝트 이름이 `.env` 에만 있었음 |
 | 이미지 9개 빌드 | Kotlin 컴파일 오류, 고정해 둔 커넥터 JAR 주소가 사라짐 | — |
 
+전체 스택을 띄우는 E2E 는 [`e2e.yml`](.github/workflows/e2e.yml) 이 따로 돈다 (13절).
+
 외부 링크는 [`links.yml`](.github/workflows/links.yml) 이 **주 1회**(월 09:00 KST)와 수동 실행으로 검사한다.
 외부 사이트가 잠깐 막혀도 PR 이 빨갛게 되지 않도록 분리했다. 끊긴 원문은 archive.org 사본으로 바꾼다.
 
@@ -1938,3 +1942,51 @@ push 와 PR 마다 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 이 �
 ```bash
 python scripts/ci/check_docs.py
 ```
+
+## 13. E2E 테스트
+
+```bash
+make e2e                 # 또는 bash scripts/e2e.sh   (약 7분)
+E2E_DOWN=1 make e2e      # 끝나면 스택을 내린다
+```
+
+스택을 띄우고, 전용 캠페인(`cmp-e2e-<실행ID>`)으로 **정해진 이벤트**를 넣은 뒤
+수집부터 대사까지 모든 단계에서 **정확한 숫자**를 확인한다. 배경 부하(생성기 20명)를 같이 돌려
+워터마크가 실제처럼 움직이게 하고, 테스트 캠페인은 그 부하와 섞이지 않는다.
+
+| 넣는 것 | 실시간(Redis) | 확정(배치) | 원본(Parquet) | 확인하는 성질 |
+|---|---|---|---|---|
+| 정상 5건 | +5 | +5 | 5행 | 기본 경로 |
+| 중복 재전송 1쌍 | +1 | +1 | 2행 | Flink·Spark 둘 다 `event_id` 로 접는다 |
+| SSAI 이중경로 1쌍 | **+2** | +1 | 2행 | 실시간은 못 접고 배치만 접는다, 같은 파티션 |
+| 90초 지연 1건 | **+0** | +1 | 1행 | 윈도우가 버리고 `late_dropped` 에 남는다 |
+| 스키마 위반 1건 | — | — | — | 202 로 받고 `dlq.invalid` 로 (fail-open) |
+| 서명 위조 픽셀 1건 | — | — | — | 200 + GIF 로 받고 `dlq.invalid` 로 |
+| 광고 결정 1건 | | | | `event_outbox` 발행 완료, `ad.request` 에 `ad_response` |
+| **합계** | **8** | **8** | **10** | 대사: 지연반영 +1, SSAI −1, **잔차 0** |
+
+그리고 **배경 부하 캠페인까지 포함해 대사 구간의 모든 캠페인 잔차가 0** 인지 본다.
+대사 구간의 끝은 Flink 윈도우 연산자의 **실제 워터마크**로 잡는다 — 아직 안 닫힌 창을 넣으면 잔차가 + 로 나오기 때문이다 (6-7).
+
+실측 (2026-09-21, 로컬):
+
+```
+== 6. 검사  (+414s)
+  PASS  collector: 정상 배치 응답                                    202
+  PASS  kafka: 중복 재전송은 2번 (Kafka 는 거르지 않는다)                    2
+  PASS  redis: 실시간 impression = 정상5 + 중복1 + SSAI2 (+지연0)       8
+  PASS  late_dropped: 지연 이벤트 1건만                               [('evt-e2e-28e6f14badc3', 'impression')]
+  PASS  recon: 원인 = 지연반영 +1, SSAI -1, 잔차 없음                    지연반영 +1 , SSAI이중경로 -1
+  PASS  recon: 전체 7개 캠페인 모두 잔차 0 (배경 부하 포함)
+  PASS  minio: 원본 Parquet 행 = 정상5 + 중복2 + SSAI2 + 지연1 (가공 없음)  10
+  ...
+  26/26 통과
+```
+
+**검사가 실패를 잡는지도 확인했다.** Redis 의 테스트 캠페인 집계를 손으로 1 올리고 검사만 다시 돌리면
+`FAIL  redis: 실시간 impression ... 9 (기대 8)`, `25/26 통과`, exit 1 이 나온다.
+
+검사 스크립트는 `tracer` 컨테이너 안에서 돈다 (Kafka·Redis·Postgres·MinIO 클라이언트가 이미 있어 호스트에 설치할 게 없다).
+로그는 `data/e2e/` 에 남는다 (`state.json` = 넣은 이벤트 목록, `recon.log`, `batch.log` 등).
+CI 에서는 [`e2e.yml`](.github/workflows/e2e.yml) 이 코드가 바뀐 push 와 매주 월요일에 돌리고, 실패하면 컨테이너 로그를 아티팩트로 올린다.
+
