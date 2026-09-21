@@ -15,7 +15,7 @@
 | [07-flink-guide.md](07-flink-guide.md) | Flink 의 역할과 **Flink UI(:8181) 읽는 법** — 그래프·워터마크·백프레셔·체크포인트 (캡처 포함) | "Flink 화면에서 뭘 봐야 하지?" |
 | [08-minio-guide.md](08-minio-guide.md) | MinIO 의 역할과 **콘솔(:9001)·`mc` 로 원본 보는 법**, Flink 가 파일을 쓰는 방식 (캡처 포함) | "원본 파일이 어떻게 생기지?" |
 | [09-dashboard-guide.md](09-dashboard-guide.md) | **관찰 대시보드(:8088) 읽는 법** — 패널별 칸의 뜻·색 기준·정상 범위, 대사 원인 분해 읽기 (캡처 포함) | "대시보드 숫자가 무슨 뜻이지?" |
-| [10-aws-migration.md](10-aws-migration.md) | **AWS 이전 설계** — 컴포넌트별 AWS 서비스, 목표 구조, 코드에서 바꿀 자리, 옮기는 순서와 대사로 검증하는 병행 운영, 비용·함정 (방법만 서술) | "클라우드로 올리면 뭘 바꿔야 하지?" |
+| [10-aws-migration.md](10-aws-migration.md) | **AWS 이전 설계** — 컴포넌트별 AWS 서비스, 목표 구조, 코드에서 바꿀 자리, 옮기는 순서와 대사로 검증하는 병행 운영, 비용·함정, 비용 기준 대안, 순수 EC2 안과 네트워크 구성 (방법만 서술) | "클라우드로 올리면 뭘 바꿔야 하지?" |
 | [architecture-presentation.html](architecture-presentation.html) | 설계 결정 6가지와 트레이드오프 (발표용 슬라이드) | 남에게 설명할 때 |
 
 ## 화면 세 개의 역할이 다르다

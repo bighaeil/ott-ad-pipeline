@@ -7,6 +7,8 @@
 가격은 적지 않는다. 리전·약정·시점마다 달라서 숫자를 적으면 곧 틀린다.
 대신 **비용이 어디서 새는지**(7절)를 적었다. 실제 견적은 AWS Pricing Calculator 로 낸다.
 
+2~9절은 관리형 중심 추천안이다. 비용을 우선하는 대안은 **10절**, ECS 대신 EC2 로 운영하는 안과 그 네트워크 구성은 **11~12절**에 있다.
+
 ---
 
 ## 1. 원칙 — 무엇을 지키고 무엇을 바꾸나
@@ -272,6 +274,7 @@ flowchart LR
 | ALB 가 픽셀 응답을 느리게 | 플레이어 재시도 폭주 | collector 는 항상 즉시 200 + GIF (지금 계약 유지), ALB 헬스 체크는 별도 경로 |
 | SQL 변경 후 스냅샷 복구 실패 | 잡이 스냅샷에서 못 뜸 | 새 상태로 시작 + 공백 구간 구간 대사, 또는 연산자 UID 고정 |
 | 비밀값을 이미지에 굽기 | 이미지 유출 = 키 유출 | Secrets Manager 주입만. `.env.example` 은 로컬 전용 |
+| 컨테이너 사용자와 볼륨 권한 | 비 root 컨테이너가 마운트 경로에 못 씀 | 이 저장소의 CI 에서 실제로 겪었다 (Linux 에서 Flink 체크포인트 폴더 생성 실패 → `data-init`). ECS 에서 EFS 등을 붙일 때는 접근 포인트의 uid/gid 를 컨테이너 사용자에 맞춘다 |
 
 ---
 
@@ -291,3 +294,224 @@ flowchart LR
 바꾸지 않는 것: 이벤트 스키마, 토픽 이름·키, Flink SQL 의 로직, 배치·대사 로직, Outbox, 멱등 처리.
 **로컬에서 관찰한 성질(중복·지각·SSAI·Outbox 재발행)은 AWS 에서도 그대로 나타난다.**
 그래서 대사 도구와 E2E 가 이전의 안전망이 된다.
+
+---
+
+## 10. 비용 기준 대안
+
+위 추천안(관리형 중심)은 **운영 부담이 가장 적은 대신 비용은 중상위권**이다.
+S1(평균 약 1,200 EPS)에는 과한 면이 있어, 목적에 따라 아래 대안을 고른다.
+
+### 10-1. 비용은 "항상 켜진 것" 에서 나온다
+
+| 항상 켜진 것 | 추천안 | 비용 성격 |
+|---|---|---|
+| Kafka | MSK 브로커 3대 | 큼. 트래픽이 적어도 3대분 |
+| Flink | 관리형 Flink 앱 2개 | 큼. 처리 단위 × 시간에 **앱마다 오케스트레이션용 1단위가 추가**. 앱이 작을수록 이 고정분 비중이 큼 |
+| DB | Aurora Multi-AZ + RDS Proxy | 중간 |
+| Redis | ElastiCache 2노드 | 작음 |
+| 네트워크 | NAT 게이트웨이 | 숨은 비용 (7절) |
+
+배치(EMR Serverless)는 돌릴 때만 과금되어 작다. **Kafka·Flink·DB 를 어떻게 하느냐가 비용을 정한다.**
+
+### 10-2. 대안 다섯 가지
+
+| 대안 | 구성 | 장점 | 대가 | 맞는 경우 |
+|---|---|---|---|---|
+| **A. EC2 한 대** | Graviton 16 GB급 1대에 지금 docker compose 그대로 | 가장 쌈. 코드 변경 거의 0. E2E 가 Linux 러너에서 이미 통과 | 단일 장애점, 복구 수동. **운영 트래픽 부적합** | 학습·포트폴리오·시연 |
+| **B. 부분 관리형** | MSK 소형 유지 / Flink 는 EC2 에서 직접 / 배치는 **Athena** SQL / Aurora Serverless v2 / 앱은 EC2(약정) | 비용 대비 안정성 최고. Flink 를 SQL Client 방식 그대로 운영 | Flink 운영(업그레이드·장애)을 떠안음. 배치를 PySpark → SQL 로 옮기는 중간 규모 작업 | **실제 서비스 초기 (S1 이하, 운영 인력 있음)** |
+| **C. Kafka 호환 대체재** | Confluent Cloud / Aiven / Redpanda Cloud, 또는 S3 기반 Kafka 호환(WarpStream 계열) | 처리량 기준 요금. S3 기반은 AZ 간 복제 트래픽이 거의 없음 | S3 기반은 지연이 수백 ms 로 늘어남 (1분 윈도우 + 워터마크 10초라 영향 작음) | Kafka 비용만 줄이고 싶을 때, S2 처럼 처리량이 클 때 |
+| **D. ClickHouse 로 단순화** | Kafka → ClickHouse(Kafka 엔진 → 머티리얼라이즈드 뷰 → 집계 테이블). Flink·Redis·Spark·MinIO 대체 | 컴포넌트 4개 → 1개 | ClickHouse 는 지각 이벤트를 버리지 않는다 → "실시간과 확정이 다르고 대사로 설명한다" 가 "실시간이 확정으로 수렴한다" 로 바뀜. 대사·late_dropped 설계의 의미가 줄어듦 | 팀이 작고 대시보드·정산을 한 DB 에서 보고 싶을 때 |
+| **E. 서버리스 조합** | API Gateway + Lambda → Kinesis On-Demand → Firehose(Parquet) → S3 → Athena | 쓴 만큼만. 한가할 때 거의 0 | **꾸준히 1,000 EPS 이상이면 오히려 비쌈**. Kafka 계약을 버려 collector·Flink 소스·redis-writer·추적기를 다시 짬 | 특정 시간에만 트래픽이 몰리는 서비스 |
+
+### 10-3. 어느 안이든 쓰는 절감 수단
+
+| 수단 | 효과가 큰 곳 |
+|---|---|
+| Graviton(ARM) | EC2, MSK, Aurora, ElastiCache. 이미지가 JVM·Python 이라 ARM 전환이 쉽다 |
+| 약정 할인 (Savings Plans, 예약 노드) | 항상 켜진 MSK, Aurora, ElastiCache, EC2 |
+| Spot | 배치 서버, 부하 시험용 generator, 스테이징 |
+| VPC 엔드포인트 | NAT 처리 비용 |
+| archive 체크포인트 1~5분 + 컴팩션 | S3 요청 수 (04 문서 small files) |
+| 스테이징은 E2E 때만 켜기 | 가장 흔한 낭비 |
+
+### 10-4. 목적별 선택
+
+| 목적 | 추천 |
+|---|---|
+| 학습·포트폴리오·시연 | **A** |
+| 실제 서비스 초기, 운영 인력 있음 | **B** |
+| 운영 인력이 거의 없음 | 2절 추천안 (전부 관리형) |
+| 컴포넌트 수를 줄이고 싶음 | **D** (대사 구조 포기) |
+| S2 규모 | 2절 추천안 + **C** (S3 기반 Kafka) |
+
+---
+
+## 11. 순수 EC2 안 — ECS 대신 EC2 로 운영한다면
+
+### 11-1. "ECS 대신 EC2" 는 돈을 줄이는 선택이 아니다
+
+| 방식 | 서버 비용 | ECS 관리 비용 | 운영 부담 |
+|---|---|---|---|
+| ECS on Fargate (2절 추천안) | vCPU·메모리 × 시간. 같은 사양이면 EC2 보다 비쌈 | 없음 | 가장 적음 |
+| ECS on EC2 | EC2 가격 그대로 | **없음 (무료)** | 중간. 서버 패치는 직접, 컨테이너 배치·교체는 ECS |
+| 순수 EC2 + docker compose | EC2 가격 그대로 | 없음 | 가장 큼. 배포·교체·장애 대응 직접 |
+
+**Fargate → EC2 는 돈이 줄지만, ECS on EC2 → 순수 EC2 는 돈은 같고 일만 는다.**
+그래도 순수 EC2 를 고르는 이유: 지금 docker compose 를 거의 그대로 쓴다, 로컬과 같은 방식으로 문제를 본다,
+특정 클라우드에 덜 묶인다.
+
+### 11-2. 역할별 배치 (S1)
+
+MSK·Aurora·ElastiCache 는 관리형으로 둔다. Kafka·DB 장애는 직접 운영하면 복구 비용이 가장 크고,
+이 파이프라인의 정합성(Outbox, 대사)이 이 둘에 기댄다.
+
+| 그룹 | 대수 | 올리는 것 | 비고 |
+|---|---|---|---|
+| ingest | ASG 최소 2대 (AZ 분산) | collector, ad-decision | 상태 없음 → 죽으면 ASG 가 교체. CPU·ALB 요청 수로 오토스케일 |
+| stream | 3대 고정 | Flink JM 1, TM 2, redis-writer | 약정 할인 대상. 체크포인트 → S3 |
+| batch | 평소 0대 (필요할 때 Spot 1대) | Spark 컨테이너 | EventBridge 가 띄우고 끝나면 종료 |
+| tools | 스테이징에만 1대 | dashboard, tracer, player, generator | 운영에는 안 올림 |
+
+### 11-3. 배포
+
+1. `docker-compose.yml` 에 역할별 `profiles` (ingest / stream / batch) 를 붙이고, 운영용 오버라이드에서 Kafka·Postgres·Redis·MinIO 를 빼고 접속 주소를 관리형으로 바꾼다.
+2. Docker 와 CloudWatch 에이전트를 넣은 AMI 를 Packer 로 만든다.
+3. 부팅 스크립트(user-data): Parameter Store·Secrets Manager 로 `.env` 를 만들고(`.env.example` 구조 그대로), ECR 에서 이미지를 받아 `docker compose --profile <역할> up -d`.
+4. 배포는 새 이미지 태그를 Parameter Store 에 기록하고 ASG **Instance Refresh** 로 한 대씩 교체. stream 은 Flink 세이브포인트 후 교체.
+5. Flink 잡 제출은 JM 서버에서 지금의 `scripts/flink-submit.sh` 그대로 — 관리형 Flink 보다 나은 점.
+6. 로그는 Docker `awslogs` 드라이버 → CloudWatch Logs, `/actuator/prometheus` 는 Managed Prometheus 가 수집.
+
+### 11-4. ECS 대비 떠안는 것
+
+| ECS 가 해 주던 것 | 순수 EC2 에서는 |
+|---|---|
+| 죽은 컨테이너 재시작 | compose `restart: unless-stopped` + ASG 헬스 체크로 서버째 교체 |
+| 컨테이너 단위 무중단 배포 | 서버 단위로만 (Instance Refresh) |
+| **태스크별 IAM 역할** | **서버의 모든 컨테이너가 같은 역할.** collector 와 ad-decision 권한을 못 나눈다 — 보안상 가장 큰 차이 |
+| 서비스 디스커버리 | 내부 ALB 또는 Route 53 사설 도메인 |
+| OS 패치 | SSM Patch Manager |
+| Flink JM 장애 | 단일 장애점. S3 체크포인트로 이어서 돌지만 그동안 실시간 집계 정지 (HA 는 ZooKeeper 가 필요해 더 복잡) |
+
+**비용이 목적이면 ECS on EC2 (Capacity Provider + ASG) 가 낫다** — 서버 값은 같고 재시작·배포·태스크별 IAM 이 공짜다.
+단 Flink 는 어느 쪽이든 위 stream 그룹처럼 EC2 에서 직접 돌리는 게 낫다.
+
+---
+
+## 12. 순수 EC2 안 — 네트워크 구성
+
+서울 리전(ap-northeast-2), AZ 3개 기준.
+
+```
+                               인터넷
+                  (OTT 플레이어 / SSAI 스티처 / 운영자)
+                                 │ HTTPS 443
+                                 ▼
+                     ┌──────────────────────┐
+                     │ WAF → ALB (공개, 443)  │  ACM 인증서
+                     │  /v1/events, /v1/track → collector :8080
+                     │  /v1/ad-request        → ad-decision :8090
+                     └──────────┬───────────┘
+┌─────────────────────────────── VPC 10.20.0.0/16 ─────────────────────────────────────┐
+│                                                                                      │
+│             AZ-a                        AZ-b                        AZ-c             │
+│  ┌─ public ──────────────┐ ┌─ public ──────────────┐ ┌─ public ──────────────┐       │
+│  │ 10.20.0.0/24          │ │ 10.20.1.0/24          │ │ 10.20.2.0/24          │       │
+│  │ ALB 노드  NAT-a*      │ │ ALB 노드  (NAT-b*)    │ │ ALB 노드  (NAT-c*)    │       │
+│  └───────────────────────┘ └───────────────────────┘ └───────────────────────┘       │
+│  ┌─ app ─────────────────┐ ┌─ app ─────────────────┐ ┌─ app ─────────────────┐       │
+│  │ 10.20.10.0/24         │ │ 10.20.11.0/24         │ │ 10.20.12.0/24         │       │
+│  │ [ASG ingest]          │ │ [ASG ingest]          │ │ [ASG ingest]          │       │
+│  │  collector            │ │  collector            │ │  collector            │       │
+│  │  ad-decision          │ │  ad-decision          │ │  ad-decision          │       │
+│  └──────────┬────────────┘ └──────────┬────────────┘ └──────────┬────────────┘       │
+│             │ 9098 (IAM)              │                         │                    │
+│  ┌─ stream ─▼────────────┐ ┌─ stream ───────────────┐ ┌─ stream ──────────────┐      │
+│  │ 10.20.20.0/24         │ │ 10.20.21.0/24          │ │ 10.20.22.0/24         │      │
+│  │ Flink JM              │ │ (평소 비어 있음 —        │ │ (평소 비어 있음)        │      │
+│  │ Flink TM ×2           │ │  AZ-a 장애 시 여기에서    │ │                       │      │
+│  │ redis-writer (TM 1대)  │ │  다시 띄움)             │ │                       │      │
+│  │ [batch Spot, 필요시]    │ │                        │ │                       │      │
+│  └──────────┬────────────┘ └────────────────────────┘ └───────────────────────┘      │
+│  ┌─ data ───▼────────────┐ ┌─ data ────────────────┐ ┌─ data ────────────────┐       │
+│  │ 10.20.30.0/24         │ │ 10.20.31.0/24         │ │ 10.20.32.0/24         │       │
+│  │ MSK 브로커 1           │ │ MSK 브로커 2           │ │ MSK 브로커 3           │       │
+│  │ Aurora 쓰기            │ │ Aurora 읽기(대기)       │ │                       │       │
+│  │ RDS Proxy             │ │ RDS Proxy             │ │                       │       │
+│  │ ElastiCache 주         │ │ ElastiCache 복제       │ │                       │       │
+│  └───────────────────────┘ └───────────────────────┘ └───────────────────────┘       │
+│                                                                                      │
+│  VPC 엔드포인트                                                                        │
+│   게이트웨이  : S3                         (Parquet·체크포인트·ECR 이미지 레이어)            │
+│   인터페이스  : ecr.api, ecr.dkr, secretsmanager, ssm, ssmmessages, ec2messages,      │
+│                logs, monitoring, sts      (app/stream 서브넷에 두고 443 만 연다)          │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+                                   │ S3 게이트웨이 엔드포인트 (NAT 를 타지 않음)
+                                   ▼
+                    S3 버킷: events/dt=/hour=/  ·  flink-checkpoints/  ·  collector-fallback/
+
+ * NAT: 운영은 AZ 마다 1개, 스테이징은 1개. 엔드포인트로 AWS 서비스를 다 연결하면
+   NAT 로 나가는 건 OS 패치 저장소 정도라, AMI 에 미리 구워 두면 NAT 를 아예 없앨 수도 있다.
+```
+
+### 12-1. 서브넷 네 층
+
+| 층 | 들어가는 것 | 인터넷 | 이유 |
+|---|---|---|---|
+| public | ALB, NAT | 들어오고 나감 | 인터넷에 직접 노출되는 건 ALB 하나뿐 |
+| app | ASG ingest | 나가기만 (NAT) | 트래픽 따라 대수가 변하는 층, 3 AZ 분산 |
+| stream | Flink, redis-writer, 배치 | 나가기만 (NAT) | 고정 대수, 상태(체크포인트)를 가진 층 |
+| data | MSK, Aurora, RDS Proxy, ElastiCache | 없음 | 저장소는 어떤 경로로도 인터넷에 닿지 않게 |
+
+**stream 을 한 AZ 에만 두는 이유**: JM·TM 사이 트래픽이 많아 AZ 를 나누면 전부 AZ 간 전송 요금이 된다.
+JM 은 어차피 한 대라 나눠도 가용성이 크게 오르지 않는다. AZ-a 가 죽으면 AZ-b 에서 다시 띄우고
+S3 체크포인트에서 이어 간다. 그동안의 공백은 원본(Kafka)이 남아 있으므로 **구간 대사로 확인**한다.
+
+### 12-2. 보안 그룹
+
+| 보안 그룹 | 인바운드 | 아웃바운드 |
+|---|---|---|
+| sg-alb | 443 ← 0.0.0.0/0 | 8080, 8090 → sg-ingest |
+| sg-ingest | 8080, 8090 ← sg-alb | 9098 → sg-msk / 5432 → sg-proxy / 443 → sg-endpoints, S3 |
+| sg-stream | **모든 TCP ← sg-stream 자신** (Flink 노드끼리) / 8099 ← sg-batch | 9098 → sg-msk / 5432 → sg-proxy / 6379 → sg-redis / 443 → sg-endpoints, S3 |
+| sg-batch | 없음 | 443 → S3 / 5432 → sg-proxy / 8099 → sg-stream (대사가 `/agg/summary` 호출) |
+| sg-msk | 9098 ← sg-ingest, sg-stream | — |
+| sg-proxy | 5432 ← sg-ingest, sg-stream, sg-batch | 5432 → sg-aurora |
+| sg-aurora | 5432 ← sg-proxy 만 | — |
+| sg-redis | 6379 ← sg-stream | — |
+| sg-endpoints | 443 ← 10.20.0.0/16 | — |
+
+- **SSH(22)는 어디에도 열지 않는다.** 접속은 SSM Session Manager, 기록은 CloudTrail.
+- sg-stream 의 "자기 자신에게 모든 TCP" 는 Flink 가 blob 서버·TM 데이터 포트를 무작위로 잡기 때문이다.
+  좁히려면 `blob.server.port`, `taskmanager.data.port`, `taskmanager.rpc.port` 를 고정하고 그 포트만 연다.
+- MSK 9098 은 IAM 인증 포트다. 로컬의 9092(평문)는 쓰지 않는다.
+
+### 12-3. 라우팅
+
+| 테이블 | 대상 | 경로 |
+|---|---|---|
+| public | 0.0.0.0/0 | 인터넷 게이트웨이 |
+| app-*, stream-* | 0.0.0.0/0 | 같은 AZ 의 NAT (스테이징은 NAT 하나 공유) |
+| (위 모두) | S3 프리픽스 목록 | S3 게이트웨이 엔드포인트 |
+| data | 로컬만 | 기본 경로 없음 |
+
+### 12-4. 트래픽 흐름
+
+| # | 흐름 | 경로 |
+|---|---|---|
+| ① | 이벤트 수집 | 플레이어 → ALB:443 → collector:8080 → MSK:9098 (`ad.*`) |
+| ② | 광고 결정 | 플레이어 → ALB:443 → ad-decision:8090 → RDS Proxy:5432 → Aurora (결정 + outbox 한 트랜잭션) |
+| ③ | Outbox 발행 | ad-decision 워커 → Aurora (`SKIP LOCKED`) → MSK:9098 `ad.request` |
+| ④ | 실시간 처리 | MSK → Flink TM → MSK(`agg.minute`, `late.events`) + RDS Proxy(`campaigns` 조회, `late_dropped` 기록) |
+| ⑤ | 원본 적재 | Flink TM → S3 게이트웨이 엔드포인트 → Parquet, 체크포인트 |
+| ⑥ | 실시간 서빙 | MSK → redis-writer → ElastiCache:6379 |
+| ⑦ | 배치·대사 | EventBridge → 배치 서버(Spot) → S3 → Aurora, 대사는 redis-writer:8099 호출 |
+| ⑧ | 배포 | 부팅 → ECR 엔드포인트(레이어는 S3) → Secrets Manager·SSM 으로 `.env` |
+| ⑨ | 운영 접속 | SSM Session Manager / Flink UI(8081)는 SSM 포트 포워딩으로만 |
+| ⑩ | collector 폴백 | Kafka 장애 시 로컬 JSONL → 사이드카 → S3 `collector-fallback/` |
+
+### 12-5. 짚어 둘 점
+
+- **AZ 간 전송**: collector 가 다른 AZ 의 리더 파티션에 쓰는 트래픽은 피할 수 없다. 읽기 쪽(Flink, redis-writer)은 `client.rack` 으로 같은 AZ 복제본에서 읽게 한다.
+- **ALB 헬스 체크**는 `/actuator/health` 로 따로 둔다. 픽셀 경로(`/v1/track`)로 하면 DLQ 가 지저분해진다.
+- **스테이징**은 AZ 하나, NAT 하나로 줄이고 E2E 때만 올린다.
