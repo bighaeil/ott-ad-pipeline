@@ -37,3 +37,8 @@ bash scripts/flink-archive.sh# 원본 적재 잡
 # 브라우저에서 http://localhost:3001 -> 콘텐츠 선택 -> 광고 재생 -> [데이터 확인]
 bash scripts/flush-windows.sh && bash scripts/batch.sh   # 확정 집계까지 보고 싶을 때
 ```
+
+## 캡처 다시 찍기
+
+`img/` 의 스크린샷 30장은 [`scripts/capture/`](../scripts/capture/README.md) 로 다시 찍을 수 있다.
+상황(부하 중 / 배치 후 / 사고 중)을 먼저 만들어 두고 찍어야 한다 — 순서는 그 README 에 있다.

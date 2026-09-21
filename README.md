@@ -1761,6 +1761,7 @@ docker-compose.yml         전체 스택 (한 파일)
 docker-compose.scale.yml   Collector 스케일 아웃 전용 오버레이 (시나리오 1)
 .env.example               로컬 축소 설정 견본 (.env 로 복사해서 사용, .env 는 커밋 안 함)
 Makefile / make.ps1        조작 진입점 (make 없는 Windows 용 래퍼 포함)
+scripts/capture/           문서 스크린샷(docs/img) 재촬영 스크립트 + 상황별 순서
 README.md                  이 문서
 
 collector/                 Kotlin + Spring Boot WebFlux (수집 API, fail-open)

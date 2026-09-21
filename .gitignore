@@ -14,3 +14,6 @@ ad-decision/.gradle/
 
 # 로컬 설정 (견본은 .env.example)
 .env
+
+# 문서 캡처용 venv (scripts/capture/README.md)
+.venv-capture/
