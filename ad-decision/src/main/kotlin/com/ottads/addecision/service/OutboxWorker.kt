@@ -2,16 +2,22 @@ package com.ottads.addecision.service
 
 import com.ottads.addecision.config.OutboxProperties
 import com.ottads.addecision.metrics.OutboxMetrics
+import jakarta.annotation.PostConstruct
+import jakarta.annotation.PreDestroy
 import org.slf4j.LoggerFactory
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import org.springframework.transaction.support.TransactionTemplate
 import java.sql.Timestamp
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 data class OutboxRow(
@@ -34,8 +40,19 @@ data class OutboxRow(
  * 즉 Kafka 에 중복이 생긴다. 버그가 아니라 Outbox 패턴의 정의된 성질이고(at-least-once),
  * 이 실습이 관찰하려는 대상이다. outbox.update-fail-rate 로 인위적으로 만든다.
  *
- * 로컬은 워커가 1개라 잠금이 필요 없다.
- * 운영에서 인스턴스를 여러 개 띄우면 조회에 FOR UPDATE SKIP LOCKED 를 붙여야 한다.
+ * [여러 워커가 동시에 돌 때]
+ * 1)~3)을 한 트랜잭션으로 묶고 1)에 FOR UPDATE SKIP LOCKED 를 붙인다.
+ *   - FOR UPDATE   : 내가 고른 행을 커밋할 때까지 잠근다
+ *   - SKIP LOCKED  : 남이 잠근 행은 기다리지 않고 건너뛴다 -> 워커마다 서로 다른 배치를 가져간다
+ * 잠금이 없으면 두 워커가 같은 행을 동시에 읽어 둘 다 발행한다 (update-fail-rate 와 무관한 두 번째 중복원).
+ * outbox.skip-locked=false 로 그 상황을 재현할 수 있다.
+ *
+ * 순서: 워커가 여럿이면 id 순서는 워커 사이에서 보장되지 않는다.
+ * 여기서는 ad_request_id 하나당 outbox 행이 1개(ad_response)라 같은 키 안의 순서 문제가 없다.
+ * 같은 키에 행이 여럿인 도메인이라면 키 단위로 워커를 나눠야 한다 (예: hash(aggregate_id) % N).
+ *
+ * 트랜잭션 안에서 Kafka 발행을 기다리므로 발행이 느리면 잠금도 그만큼 오래 잡힌다.
+ * 그동안 다른 워커는 다음 행으로 넘어가므로 전체가 멈추지는 않는다.
  */
 @Component
 class OutboxWorker(
@@ -43,6 +60,7 @@ class OutboxWorker(
     private val kafka: KafkaTemplate<String, String>,
     private val metrics: OutboxMetrics,
     private val props: OutboxProperties,
+    private val tx: TransactionTemplate,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -52,8 +70,7 @@ class OutboxWorker(
         WHERE published = false
         ORDER BY id
         LIMIT ?
-    """.trimIndent()
-    // 운영(다중 워커): 위 쿼리 끝에 FOR UPDATE SKIP LOCKED 를 붙이고 트랜잭션 안에서 돌린다.
+    """.trimIndent() + (if (props.skipLocked) "\nFOR UPDATE SKIP LOCKED" else "")
 
     private val rowMapper = RowMapper { rs, _ ->
         OutboxRow(
@@ -68,14 +85,45 @@ class OutboxWorker(
     private val seen = ConcurrentHashMap.newKeySet<Long>()
     private val totalPublished = AtomicLong(0)
 
-    @Scheduled(fixedDelayString = "\${outbox.poll-interval-ms:500}")
-    fun poll() {
-        val rows = try {
-            jdbc.query(selectSql, rowMapper, props.batchSize)
-        } catch (e: Exception) {
-            log.warn("outbox 조회 실패: {}", e.toString())
-            return
+    private lateinit var pool: ScheduledExecutorService
+
+    @PostConstruct
+    fun start() {
+        val n = props.workers.coerceAtLeast(1)
+        val seq = AtomicInteger(0)
+        pool = Executors.newScheduledThreadPool(n) { r ->
+            Thread(r, "outbox-${seq.incrementAndGet()}").apply { isDaemon = true }
         }
+        repeat(n) {
+            pool.scheduleWithFixedDelay(::pollSafely, 0, props.pollIntervalMs, TimeUnit.MILLISECONDS)
+        }
+        log.info(
+            "outbox 워커 {}개 시작 (skip-locked={}, batch={}, update-fail-rate={})",
+            n, props.skipLocked, props.batchSize, props.updateFailRate,
+        )
+        if (n > 1 && !props.skipLocked) {
+            log.warn("워커가 {}개인데 skip-locked=false -> 같은 행을 여러 워커가 발행한다 (중복 재현 모드)", n)
+        }
+    }
+
+    @PreDestroy
+    fun stop() {
+        pool.shutdown()
+        pool.awaitTermination(10, TimeUnit.SECONDS)
+    }
+
+    /** 예외가 새어 나가면 scheduleWithFixedDelay 가 그 워커를 조용히 멈춘다. 그래서 여기서 막는다. */
+    private fun pollSafely() {
+        try {
+            tx.executeWithoutResult { poll() }
+        } catch (e: Exception) {
+            log.warn("outbox 폴링 실패 (롤백 -> 다음 폴링에서 재시도): {}", e.toString())
+        }
+    }
+
+    /** 트랜잭션 안에서 호출된다. 반환하면 커밋되고 잠금이 풀린다. */
+    private fun poll() {
+        val rows = jdbc.query(selectSql, rowMapper, props.batchSize)
         if (rows.isEmpty()) return
 
         val publishedIds = ArrayList<Long>(rows.size)
@@ -98,10 +146,11 @@ class OutboxWorker(
         totalPublished.addAndGet(publishedIds.size.toLong())
         if (republished > 0) {
             metrics.republished(republished)
-            log.warn("outbox 재발행 {}건 (직전 업데이트 실패분) -> Kafka 에 중복 발생", republished)
+            log.warn("outbox 재발행 {}건 -> Kafka 에 중복 발생", republished)
         }
 
         // ---- 중복이 태어나는 자리 ----------------------------------------
+        // UPDATE 없이 커밋 -> 잠금만 풀리고 행은 미발행으로 남는다 -> 다음 폴링(어느 워커든)이 재발행
         if (ThreadLocalRandom.current().nextDouble() < props.updateFailRate) {
             metrics.updateSkipped(publishedIds.size)
             log.warn(
@@ -111,16 +160,11 @@ class OutboxWorker(
             return
         }
 
-        try {
-            jdbc.batchUpdate(
-                "UPDATE event_outbox SET published = true, published_at = now() WHERE id = ?",
-                publishedIds.map { arrayOf<Any>(it) },
-            )
-        } catch (e: Exception) {
-            // 진짜로 실패해도 결과는 같다. 다음 폴링에서 재발행된다.
-            metrics.updateSkipped(publishedIds.size)
-            log.error("outbox 플래그 업데이트 실패 ({}건) -> 재발행 예정: {}", publishedIds.size, e.toString())
-        }
+        // 진짜로 실패하면 예외가 트랜잭션을 롤백시키고 pollSafely 가 로그를 남긴다. 결과는 같다(재발행).
+        jdbc.batchUpdate(
+            "UPDATE event_outbox SET published = true, published_at = now() WHERE id = ?",
+            publishedIds.map { arrayOf<Any>(it) },
+        )
     }
 
     /** 미발행 건수와 최고 지연(가장 오래된 미발행 행의 나이)을 게이지에 반영 */

@@ -722,11 +722,11 @@ curl -X POST http://localhost:8090/v1/ad-request -H 'Content-Type: application/j
 impression/request 비율이 1 밑으로 내려가고, 단계 4의 이상 감지(임계치 0.5)가 의미를 갖는다.
 노필이면 생성기는 impression 이하를 발생시키지 않는다.
 
-### 4-2. Outbox 워커 (같은 앱의 `@Scheduled`)
+### 4-2. Outbox 워커 (같은 앱 안의 폴링 스레드)
 
-500ms마다:
+500ms마다, **한 트랜잭션 안에서**:
 
-1. `published = false` 를 `id` 순으로 최대 500건 조회
+1. `published = false` 를 `id` 순으로 최대 500건 조회 — `FOR UPDATE SKIP LOCKED`
 2. Kafka `ad.request` 로 **동기** 발행 (파티션 키 = `aggregate_id` = `ad_request_id`)
 3. 성공한 id 를 `published = true` 로 업데이트
 
@@ -734,8 +734,29 @@ impression/request 비율이 1 밑으로 내려가고, 단계 4의 이상 감지
 버그가 아니라 Outbox 패턴의 정의된 성질(at-least-once)이고, 이 실습이 관찰하려는 대상이다.
 `OUTBOX_UPDATE_FAIL_RATE`(기본 0.02)로 그 상황을 인위적으로 만든다. 0 으로 두면 중복이 사라진다.
 
-로컬은 워커가 1개라 잠금이 없다. 운영에서 인스턴스를 여러 개 띄우면 조회에
-`FOR UPDATE SKIP LOCKED` 를 붙여야 한다 (`OutboxWorker.selectSql` 주석 참조).
+**워커가 여러 개일 때.** `FOR UPDATE` 로 고른 행을 커밋까지 잠그고, `SKIP LOCKED` 로 남이 잠근 행은
+기다리지 않고 건너뛴다. 그래서 워커마다 서로 다른 배치를 가져간다. 잠금이 없으면 여러 워커가 같은 행을
+동시에 읽어 **워커 수만큼** 발행한다 — `update-fail-rate` 와는 다른 두 번째 중복원이다.
+
+| 환경변수 | 기본값 | 의미 |
+|---|---|---|
+| `OUTBOX_WORKERS` | 1 | 한 프로세스 안의 동시 워커 수. 2 이상이면 인스턴스를 여러 개 띄운 것과 같은 경쟁이 생긴다 |
+| `OUTBOX_SKIP_LOCKED` | true | `false` + 워커 2 이상 = 잠금이 없을 때의 중복 재현 |
+
+실측 (2026-09-21, 중복은 Kafka `ad.request` 를 직접 읽어 `event_id` 로 셈):
+
+| 실험 (부하 60초, 업데이트 실패율 0) | outbox 행 | Kafka 메시지 | 중복 |
+|---|---|---|---|
+| 워커 3 + `SKIP LOCKED` | 506 | 506 | **0** |
+| 워커 3 + 잠금 없음 (`OUTBOX_SKIP_LOCKED=false`) | 523 | 1,558 | **1,035** (행 519개가 2~3번씩) |
+| 기본값: 워커 1, 실패율 0.02 (참고) | 498 | 500 | 2 (업데이트 실패 재현 1회분) |
+
+```bash
+OUTBOX_WORKERS=3 OUTBOX_SKIP_LOCKED=false OUTBOX_UPDATE_FAIL_RATE=0 docker compose up -d --no-deps ad-decision
+```
+
+워커가 여럿이면 id 순서는 워커 사이에서 보장되지 않는다. 여기서는 `ad_request_id` 하나당 outbox 행이
+1개(ad_response)라 문제가 없다. 같은 키에 행이 여럿인 도메인이면 키 단위로 워커를 나눠야 한다.
 
 노출 메트릭:
 
@@ -1731,7 +1752,7 @@ make flush && make batch && make recon
 | Admin 엔드포인트 | 수집 포트에 그대로 노출 | 별도 포트 + 인증 |
 | Spark | 단일 컨테이너 on-demand | EMR / K8s executor 다수 |
 | 생성기 시간 | 재생 위치를 x10~x150 배속 | 실시간 1배속, 사용자 수로 부하 조절 |
-| Outbox 워커 | 단일 인스턴스, 잠금 없음 | 다중 인스턴스 + `FOR UPDATE SKIP LOCKED` |
+| Outbox 워커 | 단일 인스턴스 (워커 수는 `OUTBOX_WORKERS`, `SKIP LOCKED` 적용됨) | 다중 인스턴스 또는 CDC(Debezium) |
 | Outbox 중복 | `update-fail-rate` 로 인위 재현 | 실제 크래시/네트워크 단절로 발생 |
 | 소재 결정 | 예산 가중 랜덤 | 타게팅 + 빈도제어 + 실시간 입찰 |
 | Flink 병렬도 | 1 (슬롯 1개에 8태스크) | 20 (토픽별 분리 잡) |

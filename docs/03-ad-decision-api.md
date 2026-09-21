@@ -173,8 +173,15 @@ sequenceDiagram
 워커 구현에서 알아 둘 두 가지 ([`OutboxWorker.kt`](../ad-decision/src/main/kotlin/com/ottads/addecision/service/OutboxWorker.kt)):
 
 - 발행 실패 시 그 배치에서 **멈춘다**(`break`). 순서를 지키기 위해서다.
-- 로컬은 워커가 1개라 잠금이 없다. **인스턴스를 늘리면 `FOR UPDATE SKIP LOCKED` 가 필수**다
-  (안 붙이면 모든 워커가 같은 행을 집어 중복이 인스턴스 수만큼 늘어난다).
+- 조회·발행·업데이트가 한 트랜잭션이고 조회에 **`FOR UPDATE SKIP LOCKED`** 가 붙어 있다.
+  워커(또는 인스턴스)를 늘려도 각자 다른 행을 가져간다. 안 붙이면 모든 워커가 같은 행을 집어
+  중복이 워커 수만큼 늘어난다. `OUTBOX_WORKERS` / `OUTBOX_SKIP_LOCKED` 로 두 경우를 재현할 수 있다:
+
+  | 실험 (부하 60초, 업데이트 실패율 0) | outbox 행 | Kafka 메시지 | 중복 |
+  |---|---|---|---|
+  | 워커 3 + `SKIP LOCKED` | 506 | 506 | **0** |
+  | 워커 3 + 잠금 없음 (`OUTBOX_SKIP_LOCKED=false`) | 523 | 1,558 | **1,035** (행 519개가 2~3번씩) |
+  | 기본값: 워커 1, 실패율 0.02 (참고) | 498 | 500 | 2 (업데이트 실패 재현 1회분) |
 
 ---
 

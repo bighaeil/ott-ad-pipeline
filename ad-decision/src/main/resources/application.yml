@@ -39,6 +39,11 @@ outbox:
   # 이 중복이 "의도된 동작"이고, 뒤 단계에서 누가 어떻게 걷어내는지가 관찰 대상이다.
   update-fail-rate: ${OUTBOX_UPDATE_FAIL_RATE:0.02}
   stats-interval-ms: 2000
+  # 동시에 도는 워커 수. 2 이상이면 인스턴스를 여러 개 띄운 것과 같은 경쟁이 생긴다.
+  workers: ${OUTBOX_WORKERS:1}
+  # 조회에 FOR UPDATE SKIP LOCKED 를 붙인다.
+  # false 로 두고 workers 를 늘리면 잠금이 없을 때 생기는 중복을 재현할 수 있다.
+  skip-locked: ${OUTBOX_SKIP_LOCKED:true}
 
 management:
   endpoints:

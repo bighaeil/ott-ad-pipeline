@@ -314,6 +314,8 @@ services:
       OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-500}
       # 발행 후 플래그 업데이트 실패 재현 확률. 0 으로 두면 중복이 생기지 않는다.
       OUTBOX_UPDATE_FAIL_RATE: ${OUTBOX_UPDATE_FAIL_RATE:-0.02}
+      OUTBOX_WORKERS: ${OUTBOX_WORKERS:-1}
+      OUTBOX_SKIP_LOCKED: ${OUTBOX_SKIP_LOCKED:-true}
       JAVA_OPTS: -Xmx256m -XX:MaxMetaspaceSize=160m
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8090/actuator/health | grep -q UP"]

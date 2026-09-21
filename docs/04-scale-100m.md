@@ -119,7 +119,7 @@ TTL 을 줄이면 상태는 작아지지만 **늦게 온 재전송을 실시간�
 |---|---|---|---|
 | ad-decision 인스턴스 | 1 | 3~4 | 20~40 |
 | DB 커넥션 | Hikari 15 | 인스턴스당 20~30 + **PgBouncer** | 동일 + 읽기 분리 |
-| Outbox 워커 | 앱 내장 1개, 잠금 없음 | **`FOR UPDATE SKIP LOCKED`** 필수, 워커 2~4 | 워커 8+, 또는 **CDC(Debezium)로 교체** |
+| Outbox 워커 | 앱 내장 1개 (`SKIP LOCKED` 적용됨) | 워커 2~4 (`OUTBOX_WORKERS`) 또는 인스턴스 3~4 | 워커 8+, 또는 **CDC(Debezium)로 교체** |
 | 폴링 주기/배치 | 500ms / 500행 | 200ms / 2,000행 | CDC 로 폴링 제거 |
 | 테이블 정리 | 없음 | `published=true` **7일 후 삭제 + 파티셔닝** | 일 단위 파티션 DROP |
 
@@ -127,11 +127,11 @@ S1까지는 PostgreSQL 한 대로 충분하다. **S2에서는 Outbox 폴링 자�
 WAL 을 직접 읽는 CDC(Debezium → Kafka)로 바꾸는 것이 정석이다.
 그러면 "폴링 지연 0.5초" 도 사라진다.
 
-코드에 이미 적어 둔 경고 두 개가 그대로 할 일 목록이다:
+다중 워커 준비(`FOR UPDATE SKIP LOCKED` + 트랜잭션)는 이미 들어가 있다. 워커 3개로 돌려 중복 0건을
+확인했다([03 문서](03-ad-decision-api.md) 참고). 남은 할 일은 하나다:
 
 ```kotlin
 // OutboxWorker.kt
-// 운영(다중 워커): 위 쿼리 끝에 FOR UPDATE SKIP LOCKED 를 붙이고 트랜잭션 안에서 돌린다.
 private val seen = ConcurrentHashMap.newKeySet<Long>()   // ← 200k 상한. 규모가 커지면 의미가 없다
 ```
 
@@ -213,7 +213,7 @@ S1: 20 × 8,640(10초) × 5 = 864,000 개/일   ← 메타데이터만으로 쿼
 | `sql/archive.sql` `execution.checkpointing.interval` | 10s | 1~5 min (파일 크기 ↑, 보이기까지 지연 ↑) |
 | `sql/archive.sql` `auto-compaction` | 없음 | `true` + `compaction.file-size = 128MB` |
 | `sql/archive.sql` 커넥터 | `filesystem` | Iceberg |
-| `OutboxWorker.kt` 조회 | `SELECT ... LIMIT` | `+ FOR UPDATE SKIP LOCKED` (트랜잭션 안) |
+| `OUTBOX_WORKERS` | 1 | 2~4 (조회에 `SKIP LOCKED` 는 이미 적용됨) |
 | `OutboxWorker.kt` `seen` | 200k 집합 | 제거 (메트릭으로) |
 | `application.yml` Hikari | max 15 | 20~30 + PgBouncer |
 | `spark/batch_settlement.py` | 전체 재계산 + truncate | `dt` 증분 + 파티션 교체 |
@@ -226,7 +226,7 @@ S1: 20 × 8,640(10초) × 5 = 864,000 개/일   ← 메타데이터만으로 쿼
 
 | 순서 | 증상 | 원인 | 대응 |
 |---|---|---|---|
-| 1 | `unpublished` 적체가 계속 증가 | Outbox 워커 1개의 발행 처리량 한계 | 워커 다중화 + SKIP LOCKED, 배치 크기 ↑ |
+| 1 | `unpublished` 적체가 계속 증가 | Outbox 워커 1개의 발행 처리량 한계 | `OUTBOX_WORKERS` ↑ (SKIP LOCKED 적용됨), 배치 크기 ↑ |
 | 2 | Collector p95 급등, fallback 파일 증가 | 인스턴스 부족 / Kafka 백프레셔 | Collector 수평 확장, linger·batch 조정 |
 | 3 | Flink 체크포인트 실패, 백프레셔 | 상태가 힙을 넘음 | RocksDB + 증분 체크포인트, 병렬도 ↑ |
 | 4 | 컨슈머 랙 증가 | 파티션 < 병렬도 | 파티션 증설(순서 보장 재검토 필요) |
