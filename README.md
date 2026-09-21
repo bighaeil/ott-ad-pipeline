@@ -45,6 +45,7 @@
 | [docs/07-flink-guide.md](docs/07-flink-guide.md) | Flink 역할 + Flink UI(:8181) 읽는 법 (캡처) |
 | [docs/08-minio-guide.md](docs/08-minio-guide.md) | MinIO 역할 + 콘솔(:9001)·`mc` 로 원본 보는 법 (캡처) |
 | [docs/09-dashboard-guide.md](docs/09-dashboard-guide.md) | 관찰 대시보드(:8088) 패널별 읽는 법 (캡처) |
+| [docs/10-aws-migration.md](docs/10-aws-migration.md) | AWS 로 옮긴다면 — 서비스 대응, 목표 구조, 이전 순서·병행 운영, 비용이 새는 곳 (실제 이전은 안 함) |
 
 ---
 
@@ -1989,4 +1990,11 @@ E2E_DOWN=1 make e2e      # 끝나면 스택을 내린다
 검사 스크립트는 `tracer` 컨테이너 안에서 돈다 (Kafka·Redis·Postgres·MinIO 클라이언트가 이미 있어 호스트에 설치할 게 없다).
 로그는 `data/e2e/` 에 남는다 (`state.json` = 넣은 이벤트 목록, `recon.log`, `batch.log` 등).
 CI 에서는 [`e2e.yml`](.github/workflows/e2e.yml) 이 코드가 바뀐 push 와 매주 월요일에 돌리고, 실패하면 컨테이너 로그를 아티팩트로 올린다.
+실패하면 진행 로그 끝부분을 **실행 요약의 annotation** 으로도 올린다 (로그 화면은 로그인해야 보이지만 요약은 바로 보인다).
+
+**CI 가 첫 실행에서 실제 버그를 찾았다.** Linux 러너에서 Flink 잡 제출이
+`Failed to create directory for shared state: file:/data/checkpoints/...` 로 실패했다.
+`./data` 바인드 마운트에 Flink(uid 9999)·collector(uid 100)가 쓰는데, Linux 에서는 호스트 폴더 소유자와
+uid 가 달라 쓰기가 막힌다. Windows·macOS 의 Docker Desktop 은 권한을 느슨하게 다뤄서 로컬에서는 한 번도 드러나지 않았다.
+`docker-compose.yml` 에 1회성 `data-init` 서비스를 두어 쓰는 폴더만 열어 주고, Flink·collector 가 그 뒤에 뜨게 했다.
 
