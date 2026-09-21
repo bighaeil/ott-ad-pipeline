@@ -57,10 +57,11 @@ jobs:
         run: |
           python - <<'EOF'
           import glob, os
-          files = sorted(glob.glob("data/e2e/*.log") + glob.glob("data/e2e/containers/*.log"),
-                         key=os.path.getmtime, reverse=True)[:4]
-          for f in files:
-              tail = open(f, encoding="utf-8", errors="replace").read().splitlines()[-25:]
+          # 진행 로그(run.log) 먼저, 그다음 단계별 로그 중 가장 최근 것 (컨테이너 로그는 아티팩트로)
+          steps = sorted((f for f in glob.glob("data/e2e/*.log") if not f.endswith("run.log")),
+                         key=os.path.getmtime, reverse=True)[:1]
+          for f in [f for f in ["data/e2e/run.log"] if os.path.exists(f)] + steps:
+              tail = open(f, encoding="utf-8", errors="replace").read().splitlines()[-40:]
               body = "\n".join(tail).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
               print(f"::error title={f}::{body}")
           EOF
