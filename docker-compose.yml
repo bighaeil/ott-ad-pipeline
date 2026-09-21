@@ -166,6 +166,26 @@ services:
     restart: "no"
     logging: *default-logging
 
+  # ------------------------------------------------------------------ 호스트 폴더 권한
+  # ./data 를 바인드 마운트하는 컨테이너 중 Flink(uid 9999)와 collector(uid 100)는 root 가 아니다.
+  # Linux 에서는 호스트 폴더 소유자(예: uid 1000)와 달라 쓰기가 막힌다 -> 체크포인트 디렉토리를 못 만들어
+  # Flink 잡 제출이 실패한다 ("Failed to create directory for shared state").
+  # Windows/macOS 의 Docker Desktop 은 바인드 마운트 권한을 느슨하게 다뤄서 드러나지 않는다 (CI 가 찾았다).
+  # 쓰는 폴더만 한 번 열어 준다. 이미 빌드하는 Flink 이미지를 써서 따로 받을 이미지가 없다.
+  data-init:
+    build:
+      context: ./flink
+      dockerfile: Dockerfile
+    image: ottads/flink:1.20-0.1.0
+    container_name: ottads-data-init
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mkdir -p /data/checkpoints /data/fallback /data/flink && chmod 0777 /data/checkpoints /data/fallback /data/flink && echo '[data-init] ok'"]
+    volumes:
+      - ./data:/data
+    restart: "no"
+    logging: *default-logging
+
   # ------------------------------------------------------------------ Flink
   jobmanager:
     build:
@@ -173,6 +193,9 @@ services:
       dockerfile: Dockerfile
     image: ottads/flink:1.20-0.1.0
     container_name: ottads-flink-jm
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
     ports:
       # 호스트 8181 -> 컨테이너 8081.
       # collector 를 스케일 아웃하면 호스트 8080-8085 를 쓰므로 8081 을 비워 둔다.
@@ -226,6 +249,8 @@ services:
     depends_on:
       jobmanager:
         condition: service_started
+      data-init:
+        condition: service_completed_successfully
     command: taskmanager
     environment:
       # 로컬 2슬롯 / 운영 20슬롯 (TM 5대 x 4)
@@ -264,6 +289,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      data-init:
+        condition: service_completed_successfully
     ports:
       # 평소에는 8080 고정. 문서와 스크립트가 전부 이 주소를 쓴다.
       # 스케일 아웃은 docker-compose.scale.yml 오버레이로만 한다
