@@ -16,7 +16,11 @@ DC := docker compose
 help: ## 사용 가능한 타깃
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS=":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-up: ## 전체 기동 (collector 는 빌드 포함)
+.env: ## (.env 가 없을 때만) .env.example 을 복사
+	cp .env.example .env
+	@echo ".env 를 .env.example 에서 만들었습니다."
+
+up: .env ## 전체 기동 (collector 는 빌드 포함)
 	$(DC) up -d --build
 	@echo "--- 기동 대기 ---"
 	@$(MAKE) --no-print-directory health

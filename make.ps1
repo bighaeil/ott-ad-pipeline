@@ -69,6 +69,10 @@ switch ($Target.ToLower()) {
     }
 
     "up" {
+        if (-not (Test-Path ".env")) {
+            Copy-Item ".env.example" ".env"
+            Write-Host ".env 를 .env.example 에서 만들었습니다."
+        }
         docker compose up -d --build
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Write-Host "--- 기동 대기 ---"

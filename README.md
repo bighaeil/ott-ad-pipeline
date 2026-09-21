@@ -50,6 +50,12 @@
 
 필요한 것: Docker Desktop (Compose v2 이상), bash(Git Bash 또는 WSL), curl, openssl.
 
+설정 파일: 저장소에는 견본 `.env.example` 만 있다. `make up`(또는 `make.ps1 up`)이
+`.env` 가 없으면 견본을 복사해 만든다. 직접 만들려면 `cp .env.example .env`.
+`.env` 는 커밋되지 않으니 **실제 비밀값은 `.env` 에만** 넣는다.
+모든 값은 `docker-compose.yml` 에 같은 기본값이 있어서 `.env` 없이도 뜨고,
+Compose 프로젝트 이름은 `docker-compose.yml` 의 `name: ottads` 로 고정돼 볼륨 이름이 바뀌지 않는다.
+
 ### `make` 가 없어도 된다 — 명령 대응표
 
 **Windows 에는 `make` 가 기본으로 없다.** 이 문서는 짧아서 `make xxx` 로 적었지만,
@@ -58,7 +64,7 @@
 
 | 하고 싶은 것 | make 있을 때 | **make 없을 때 (Git Bash)** |
 |---|---|---|
-| 전체 기동 | `make up` | `docker compose up -d && bash scripts/health.sh` |
+| 전체 기동 | `make up` | `cp -n .env.example .env; docker compose up -d && bash scripts/health.sh` |
 | 동작 확인 | `make smoke` | `bash scripts/smoke.sh` |
 | 실시간 잡 제출 | `make flink` | `bash scripts/flink-submit.sh` |
 | 원본 적재 잡 제출 | `make archive` | `bash scripts/flink-archive.sh` |
@@ -1719,7 +1725,7 @@ make flush && make batch && make recon
 | Kafka 데이터 디렉토리 | 컨테이너를 `root` 로 기동 | 전용 uid, 볼륨 사전 chown |
 | MinIO | single drive | S3 (멀티 AZ) |
 | Collector fallback | 컨테이너 로컬 디스크 | 사이드카 → S3 또는 로컬 mirror Kafka |
-| HMAC 시크릿 | 단일 공유키, `.env` 평문 | 파트너별 키 + 롤링, KMS/Secret Manager |
+| HMAC 시크릿 | 단일 공유키, `.env` 평문 (커밋 안 함, 견본은 `.env.example`) | 파트너별 키 + 롤링, KMS/Secret Manager |
 | Admin 엔드포인트 | 수집 포트에 그대로 노출 | 별도 포트 + 인증 |
 | Spark | 단일 컨테이너 on-demand | EMR / K8s executor 다수 |
 | 생성기 시간 | 재생 위치를 x10~x150 배속 | 실시간 1배속, 사용자 수로 부하 조절 |
@@ -1753,7 +1759,7 @@ make flush && make batch && make recon
 ```
 docker-compose.yml         전체 스택 (한 파일)
 docker-compose.scale.yml   Collector 스케일 아웃 전용 오버레이 (시나리오 1)
-.env                       로컬 축소 설정값 (파티션 수, 노필 비율, TTL 등)
+.env.example               로컬 축소 설정 견본 (.env 로 복사해서 사용, .env 는 커밋 안 함)
 Makefile / make.ps1        조작 진입점 (make 없는 Windows 용 래퍼 포함)
 README.md                  이 문서
 

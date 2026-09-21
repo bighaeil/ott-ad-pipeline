@@ -11,3 +11,6 @@ data/recon_after.txt
 data/flink/
 ad-decision/build/
 ad-decision/.gradle/
+
+# 로컬 설정 (견본은 .env.example)
+.env
