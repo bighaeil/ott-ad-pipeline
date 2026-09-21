@@ -86,6 +86,50 @@ powershell -ExecutionPolicy Bypass -File .\make.ps1 smoke
 > `docker compose exec` 가 깨진다. 스크립트와 Makefile 에 `MSYS_NO_PATHCONV=1` 을
 > 넣어 두었으니, 직접 `docker compose exec` 를 칠 때는 같은 변수를 앞에 붙일 것.
 
+### Windows 에서 일부 서비스가 안 뜰 때 — 포트 예약 문제
+
+**증상**: `docker compose up -d` 가 일부 서비스에서 이렇게 실패한다. 그 포트를 쓰는 프로세스는 없다.
+
+```
+Error response from daemon: ports are not available: exposing port TCP 0.0.0.0:8181 …
+bind: An attempt was made to access a socket in a way forbidden by its access permissions.
+```
+
+**원인**: Windows(Hyper-V / WinNAT)가 TCP 포트 구간을 통째로 예약해 둔 것이다.
+예약 구간은 재부팅할 때마다 바뀌어서, 어제 되던 것이 오늘 안 될 수 있다.
+
+```powershell
+netsh interface ipv4 show excludedportrange protocol=tcp
+```
+
+실제로 겪은 예약 구간은 `8068–8167`, `8168–8267` 이었고, 이 프로젝트의 호스트 포트 중
+**8080(collector) · 8088(dashboard) · 8090(ad-decision) · 8099(redis-writer) · 8181(Flink UI)**
+다섯 개가 전부 여기에 들어갔다. 컨테이너끼리의 통신(`collector:8080` 등)은 영향이 없고,
+**호스트로 포트를 게시할 때만** 막힌다.
+
+**해결** (관리자 PowerShell):
+
+```powershell
+# ① 당장 풀기 — 재부팅 후 다시 걸릴 수 있다
+net stop winnat
+net start winnat
+
+# ② 영구히 막기 — 필요한 포트를 먼저 예약해 두면 Windows 가 가져가지 않는다
+net stop winnat
+foreach ($p in 8080,8088,8090,8099,8181) {
+  netsh int ipv4 add excludedportrange protocol=tcp startport=$p numberofports=1 store=persistent
+}
+net start winnat
+```
+
+②를 한 번 해 두는 것을 권장한다. 포트를 구간 밖으로 옮기는 방법도 있지만,
+`localhost:8080` 같은 주소가 스크립트와 문서 여러 곳에 박혀 있어 고칠 곳이 많다.
+
+> **오버라이드 파일로 포트만 바꿔 띄우고 싶다면** `ports:` 앞에 `!override` 를 붙인다.
+> Compose 는 파일을 겹칠 때 목록을 **덧붙이므로** 태그 없이 쓰면 원래 포트도 남아 똑같이 실패하고,
+> `!reset` 은 속성을 **비우기만** 해서 새 값이 무시된다(게시 자체가 사라진다).
+> `docker-compose.scale.yml` 이 `!override` 를 쓰는 예다.
+
 ---
 
 ## 1. 실행 순서
