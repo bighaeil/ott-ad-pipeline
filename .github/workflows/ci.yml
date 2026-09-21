@@ -1,0 +1,86 @@
+# ---------------------------------------------------------------------------
+# CI — push / PR 마다 도는 검사
+#   checks : 문서 링크, Python·셸 문법, 줄바꿈(LF), make.ps1 BOM, Compose 설정
+#   images : 서비스 이미지 9개 빌드 (Kotlin 컴파일 + 고정해 둔 커넥터 JAR 다운로드까지 확인)
+# 외부 링크 검사는 외부 사이트 사정으로 흔들리므로 links.yml 에 따로 둔다.
+# ---------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 문서 — 상대 링크·이미지·앵커
+        run: python scripts/ci/check_docs.py
+
+      - name: Python — 문법 + pyflakes(정의 안 된 이름, 안 쓰는 import 등)
+        run: |
+          pip install -q ruff==0.6.9
+          git ls-files '*.py' | xargs python -m py_compile
+          ruff check --select F --output-format github $(git ls-files '*.py')
+
+      - name: 셸 스크립트 — 문법
+        run: |
+          fail=0
+          for f in $(git ls-files '*.sh'); do bash -n "$f" || fail=1; done
+          exit $fail
+
+      - name: 줄바꿈 — 저장소에 CRLF 가 들어오지 않았는가 (.gitattributes eol=lf)
+        run: |
+          bad=$(git ls-files --eol | awk '$1=="i/crlf" || $1=="i/mixed" {print $NF}')
+          if [ -n "$bad" ]; then echo "CRLF 가 섞인 파일:"; echo "$bad"; exit 1; fi
+
+      - name: make.ps1 — UTF-8 BOM (없으면 Windows PowerShell 5.1 에서 한글이 깨져 실패)
+        run: |
+          [ "$(head -c3 make.ps1 | od -An -tx1 | tr -d ' ')" = "efbbbf" ] || { echo "make.ps1 에 BOM 이 없다"; exit 1; }
+
+      - name: make.ps1 — PowerShell 문법
+        shell: pwsh
+        run: |
+          $tokens = $null; $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/make.ps1", [ref]$tokens, [ref]$errs) | Out-Null
+          if ($errs.Count) { $errs | ForEach-Object { Write-Host $_ }; exit 1 }
+
+      - name: Compose — 설정 (.env 없이도 떠야 한다)
+        run: |
+          test ! -e .env
+          docker compose config -q
+          docker compose -f docker-compose.yml -f docker-compose.scale.yml config -q
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [collector, ad-decision, flink, spark, redis-writer, dashboard, tracer, player, generator]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
