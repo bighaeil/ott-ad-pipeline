@@ -258,7 +258,8 @@ function render(d){
     <td style="color:${Math.abs(r.diff_rate)>0.05?'var(--warn)':'var(--fg)'}">${pct(r.diff_rate)}</td>
     <td class="cause">${r.cause||''}</td></tr>`).join('')
     || '<tr><td colspan="6" class="cause">대사 결과 없음 — bash scripts/recon.sh 를 먼저 실행</td></tr>';
-  $('r_when').textContent = rec.length ? ('마지막 대사: ' + rec[0].run_at) : '';
+  $('r_when').textContent = rec.length
+    ? ('마지막 대사: ' + rec[0].run_at + (rec[0].scope ? '  ·  범위: ' + rec[0].scope : '')) : '';
 
   // ---- 경고
   const al = (d.realtime||{}).alerts || [];

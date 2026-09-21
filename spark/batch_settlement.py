@@ -135,9 +135,10 @@ def main():
                        .filter(F.col("campaign_id").isNotNull())
                        .groupBy("dt_date", "campaign_id").agg(F.count("*").alias("imp_rows_raw")))
 
-    # 생성기가 지연을 심은 impression. Flink 워터마크(기본 10초)보다 훨씬 늦은
-    # 30~60초 과거라 실시간 윈도우에서는 사실상 전부 버려졌다(late.events 로 갔다).
-    # 배치는 event_time 만 보므로 전부 집계에 들어간다 -> 확정이 더 커지는 쪽 원인.
+    # 생성기가 "지연 전송" 표식(_late)을 붙인 impression. 참고용이다.
+    # event_time 이 30~60초 과거지만, 속한 1분 창이 아직 열려 있으면 실시간에도 집계된다.
+    # 그래서 "실시간이 실제로 버린 건수" 와 다르다. 대사는 이 값이 아니라
+    # Flink 가 윈도우 기준으로 판정해 남긴 late_dropped 테이블을 쓴다 (spark/reconcile.py).
     late_imp = (imp.filter(F.col("late_flag") == True)  # noqa: E712
                    .groupBy("dt_date", "campaign_id").agg(F.count("*").alias("late_impressions")))
 
@@ -204,6 +205,7 @@ def main():
             minute_ts   TIMESTAMPTZ NOT NULL,
             campaign_id TEXT        NOT NULL,
             impressions BIGINT      NOT NULL DEFAULT 0,
+            raw_impressions BIGINT  NOT NULL DEFAULT 0,
             clicks      BIGINT      NOT NULL DEFAULT 0,
             completes   BIGINT      NOT NULL DEFAULT 0,
             requests    BIGINT      NOT NULL DEFAULT 0,
@@ -211,8 +213,12 @@ def main():
             PRIMARY KEY (minute_ts, campaign_id)
         )
     """)
+    # 구간 대사(RECON_FROM/RECON_TO)가 SSAI 건수를 분 단위로 계산할 수 있게 raw_impressions 도 남긴다.
+    jdbc_execute(spark, "ALTER TABLE minute_settlement "
+                        "ADD COLUMN IF NOT EXISTS raw_impressions BIGINT NOT NULL DEFAULT 0")
     minute = F.date_trunc("minute", F.col("event_time"))
     m_imp = imp.groupBy(minute.alias("minute_ts"), "campaign_id")                .agg(F.count("*").alias("impressions"))
+    m_raw = imp_all.groupBy(minute.alias("minute_ts"), "campaign_id")                    .agg(F.count("*").alias("raw_impressions"))
     m_clk = (base.filter(F.col("event_type") == "click")
                  .groupBy(minute.alias("minute_ts"), "campaign_id")
                  .agg(F.count("*").alias("clicks")))
@@ -222,10 +228,11 @@ def main():
     m_req = (base.filter((F.col("event_type") == "ad_response") & (F.col("fill") == True))  # noqa: E712
                  .groupBy(minute.alias("minute_ts"), "campaign_id")
                  .agg(F.count("*").alias("requests")))
-    minute_df = (m_imp.join(m_clk, ["minute_ts", "campaign_id"], "full_outer")
+    minute_df = (m_imp.join(m_raw, ["minute_ts", "campaign_id"], "full_outer")
+                      .join(m_clk, ["minute_ts", "campaign_id"], "full_outer")
                       .join(m_cmp, ["minute_ts", "campaign_id"], "full_outer")
                       .join(m_req, ["minute_ts", "campaign_id"], "full_outer")
-                      .fillna(0, ["impressions", "clicks", "completes", "requests"])
+                      .fillna(0, ["impressions", "raw_impressions", "clicks", "completes", "requests"])
                       .withColumn("computed_at", F.current_timestamp()))
     write_jdbc(minute_df, "minute_settlement", mode="overwrite", truncate=True)
     print(f"  {minute_df.count()}행 기록 (분 x 캠페인)")

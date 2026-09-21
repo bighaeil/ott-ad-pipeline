@@ -290,7 +290,7 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
 | 컨슈머(단순) | [`redis-writer/writer.py`](../redis-writer/writer.py) |
 | 오프셋 직접 지정 | [`player/app.py`](../player/app.py) `scan_kafka()`, [`tracer/app.py`](../tracer/app.py) |
 | 중복 제거 | `pipeline.sql` `deduped` 뷰, [`spark/batch_settlement.py`](../spark/batch_settlement.py) 2)3) |
-| 워터마크/지각 | `pipeline.sql` `WATERMARK FOR event_time`, `late_events_sink` |
+| 워터마크/지각 | `pipeline.sql` `WATERMARK FOR event_time`, `late_at_window` → `late_events_sink` / `late_dropped_sink` |
 
 ---
 

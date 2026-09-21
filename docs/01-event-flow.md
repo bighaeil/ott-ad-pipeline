@@ -202,7 +202,7 @@ sequenceDiagram
 | `user.behavior` | session_start/end, progress, pause/resume/seek, content_start/end | 6 / 48 |
 | `dlq.invalid` | 검증 실패 원본 + 사유 | 6 / 48 |
 | `agg.minute` | Flink 분단위 집계 결과 | 2 |
-| `late.events` | 워터마크를 지나 도착한 이벤트 | 2 |
+| `late.events` | 속한 1분 창이 닫힌 뒤 도착해 실시간 윈도우가 버린 이벤트 | 2 |
 | `alert.anomaly` | 이상 감지 경고 | 2 |
 
 파티션 키가 `ad_request_id` 인 이유와 그 대가(핫 키 위험)는 [05-kafka-guide.md](05-kafka-guide.md) 6장 참조.
@@ -211,12 +211,12 @@ sequenceDiagram
 
 ```
  impression ┐
- quartile   ├─ UNION ALL ─> event_id 중복제거 ─> 1분 텀블링 윈도우 ─> 캠페인 lookup join ─┬─> agg.minute
- click      │   (ROW_NUMBER)      (TTL 1시간)        (워터마크 10초)                      └─> alert.anomaly
- request*   ┘
- (* ad_response AND fill=true 만)
-
- impression/quartile/click ──> event_time < CURRENT_WATERMARK() ──> late.events
+ quartile   ├─ UNION ALL ─> event_id 중복제거 ─┬─> 1분 텀블링 윈도우 ─┬─> 캠페인 lookup join ─> agg.minute
+ click      │   (ROW_NUMBER)      (TTL 1시간)  │   (워터마크 10초)     └─> alert.anomaly
+ request*   ┘                                  │
+ (* ad_response AND fill=true 만)              └─> 속한 창이 이미 닫힌 것 (워터마크 >= window_end)
+                                                     ├─> late.events            (관찰용)
+                                                     └─> Postgres late_dropped   (대사용)
 ```
 
 여기서 일어나는 네 가지 판단:
@@ -259,8 +259,10 @@ Flink 1.20 용 Redis **SQL** 커넥터가 없어서 생긴 한 홉이다.
 
 ### 3-8. 대사 ([`spark/reconcile.py`](../spark/reconcile.py))
 
-`확정 = 실시간 + 지연반영 − SSAI − 장기중복 (+ 잔차)` 로 차이를 분해해
+`확정 − 실시간 = 지연반영 − SSAI + 잔차` 로 차이를 분해해
 `reconciliation` 테이블에 남긴다. 대시보드 하단의 "원인 분해" 칸이 이 값이다.
+지연반영은 Flink 가 윈도우 기준으로 판정해 남긴 `late_dropped`, SSAI 는 배치의 `raw − 확정` 이라
+둘 다 정확한 값이고, **잔차는 0 이 정상**이다. `RECON_FROM`/`RECON_TO` 로 구간만 대사할 수도 있다.
 
 ---
 
@@ -288,7 +290,7 @@ Flink 1.20 용 Redis **SQL** 커넥터가 없어서 생긴 한 홉이다.
 | 정상 | 1건 | +1 | 1행 | 1 | 기준선 |
 | 중복 재전송 | 2건 | +1 | 2행 | 1 | Flink 가 `event_id` 로 접는다 |
 | SSAI 이중경로 | 2건 | **+2** | 2행 | 1 | `event_id` 가 달라 실시간은 못 접는다. 배치만 정리 |
-| 60초 지연 | 1건 + `late.events` | **+0** | 1행 | 1 | 워터마크를 넘겨 윈도우가 버린다. 배치는 `event_time` 만 본다 |
+| 90초 지연 | 1건 + `late.events` | **+0** | 1행 | 1 | 속한 창이 닫힌 뒤 도착해 윈도우가 버린다. 배치는 `event_time` 만 본다 |
 | 스키마 위반 | `dlq.invalid` | 0 | 0행 | 0 | Collector 검증에서 탈락. 응답은 202 |
 | 서명 위조 픽셀 | `dlq.invalid` | 0 | 0행 | 0 | HTTP 200 + GIF, 집계 제외 |
 

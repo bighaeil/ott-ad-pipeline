@@ -368,14 +368,15 @@ def sample_postgres():
                 for r in cur.fetchall()]
 
             cur.execute(
+                # scope 컬럼은 reconcile.py 가 처음 돌 때 생긴다. 없어도 되도록 jsonb 로 꺼낸다.
                 "SELECT campaign_id, realtime_impressions, batch_impressions, diff, "
-                "       diff_rate, likely_cause, run_at "
-                "FROM reconciliation WHERE run_at = (SELECT max(run_at) FROM reconciliation) "
+                "       diff_rate, likely_cause, run_at, to_jsonb(r) ->> 'scope' "
+                "FROM reconciliation r WHERE run_at = (SELECT max(run_at) FROM reconciliation) "
                 "ORDER BY campaign_id")
             out["recon"] = [
                 {"campaign_id": r[0], "realtime": r[1], "batch": r[2], "diff": r[3],
                  "diff_rate": float(r[4] or 0), "cause": r[5],
-                 "run_at": r[6].isoformat() if r[6] else None}
+                 "run_at": r[6].isoformat() if r[6] else None, "scope": r[7]}
                 for r in cur.fetchall()]
 
             cur.execute("SELECT count(*) FILTER (WHERE NOT published), count(*) FROM event_outbox")

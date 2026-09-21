@@ -69,7 +69,7 @@ Collector 가 붙이는 세 필드(`server_ts`, `event_time` 정규화, `ingest_
 | 토픽 | 스키마 요지 | 생산자 |
 |---|---|---|
 | `agg.minute` | window_start/end, campaign_id, advertiser, campaign_name, impressions, clicks, completes, requests, imp_req_ratio, ssai_dupes, emitted_at | Flink |
-| `late.events` | event_id, event_type, campaign_id, ad_request_id, event_time, watermark_at, **lateness_ms**, topic_origin | Flink |
+| `late.events` | event_id, event_type, campaign_id, ad_request_id, event_time, window_end, watermark_at, **lateness_ms**, topic_origin — 속한 창이 닫힌 뒤 도착한 것만 | Flink |
 | `alert.anomaly` | alert_type, campaign_id, window, impressions, requests, imp_req_ratio, threshold, message, detected_at | Flink |
 
 ### 2-4. 읽는 법
@@ -213,7 +213,7 @@ print(ds.to_table(filter=pads.field('ad_request_id')=='req-play-XXXX').to_pydict
 
 ## 5. PostgreSQL
 
-[`postgres/init/01-schema.sql`](../postgres/init/01-schema.sql) + 배치가 런타임에 만드는 테이블 1개.
+[`postgres/init/01-schema.sql`](../postgres/init/01-schema.sql) + [`02-late-dropped.sql`](../postgres/init/02-late-dropped.sql) + 배치가 런타임에 만드는 테이블 1개.
 
 | 테이블 | 쓰는 쪽 | 읽는 쪽 | 성격 |
 |---|---|---|---|
@@ -221,8 +221,9 @@ print(ds.to_table(filter=pads.field('ad_request_id')=='req-play-XXXX').to_pydict
 | `campaign_rates` | 운영자 | ad-decision(CPM 응답), Spark 정산 | 단가 |
 | `event_outbox` | ad-decision (결정과 **같은 트랜잭션**) | Outbox 워커 | 발행 대기열 |
 | `daily_settlement` | Spark 배치 (truncate 후 전체 재적재 = 멱등) | 대시보드, 정산 | 확정 집계(일) |
-| `minute_settlement` | Spark 배치 | 대시보드 그래프(확정 선) | 확정 집계(분) |
-| `reconciliation` | Spark 대사 | 대시보드 "원인 분해" | 실시간 vs 확정 차이 |
+| `minute_settlement` | Spark 배치 | 대시보드 그래프(확정 선), 구간 대사 | 확정 집계(분). `raw_impressions` 포함 |
+| `late_dropped` | Flink (`event_id` upsert) | 대사 | 실시간 윈도우가 버린 이벤트 |
+| `reconciliation` | Spark 대사 | 대시보드 "원인 분해" | 실시간 vs 확정 차이 (`scope` = 대사 범위) |
 
 ### 5-1. event_outbox 가 이 설계의 핵심이다
 
@@ -263,7 +264,7 @@ FROM event_outbox WHERE aggregate_id = 'req-play-XXXX';
 | `impressions` | event_id 중복 제거 + SSAI 정리까지 끝낸 확정값 → **과금 기준** |
 | `raw_impressions` | event_id 중복만 제거하고 SSAI 는 안 뺀 값 → 실시간(Flink)과 같은 지점 |
 | `dupes_removed` | event_id 중복으로 접힌 건수 |
-| `late_impressions` | 실시간이 버렸지만 배치는 센 지각 건수 |
+| `late_impressions` | 생성기가 `_late`(지연 전송) 표식을 붙인 건수. **참고용** — 실시간이 실제로 버린 건수는 `late_dropped` |
 | `clicks`, `completes` | 클릭 / 완주 |
 | `cpm`, `amount` | `amount = impressions / 1000 * cpm` |
 
@@ -279,12 +280,33 @@ FROM daily_settlement ORDER BY dt DESC, campaign_id;
 ### 5-3. reconciliation — 차이의 장부
 
 ```sql
-SELECT run_at, campaign_id, realtime_impressions, batch_impressions,
+SELECT run_at, scope, campaign_id, realtime_impressions, batch_impressions,
        diff, diff_rate, likely_cause
 FROM reconciliation ORDER BY run_at DESC LIMIT 10;
 ```
 
-`likely_cause` 는 `확정 = 실시간 + 지연 − SSAI − 장기중복 (+ 잔차)` 로 분해한 결과다.
+`likely_cause` 는 `확정 − 실시간 = 지연반영(late_dropped) − SSAI + 잔차` 로 분해한 결과다. 잔차는 0 이 정상이다.
+
+### 5-4. late_dropped — 실시간이 버린 것의 명단
+
+Flink 실시간 잡이 "속한 1분 창이 이미 닫혀 윈도우가 버린 이벤트" 를 upsert 한다
+([`postgres/init/02-late-dropped.sql`](../postgres/init/02-late-dropped.sql), 기존 볼륨에는 `flink-submit.sh` 가 적용).
+
+| 컬럼 | 뜻 |
+|---|---|
+| `event_id` | 기본키. Flink 가 재처리로 같은 이벤트를 다시 써도 한 행 |
+| `kind` | impression / quartile / complete / click / request |
+| `event_time`, `window_end`, `watermark_at` | UTC. `watermark_at >= window_end - 1ms` 인 것만 들어온다 |
+
+Kafka `late.events` 에도 같은 이벤트가 가지만, 그쪽을 세는 Redis `late:total` 은 재처리하면 두 번 센다.
+**대사는 이 테이블로 센다.**
+
+```sql
+-- 구간 안에서 실시간이 버린 impression
+SELECT campaign_id, count(*) FROM late_dropped
+WHERE kind = 'impression' AND event_time >= '2026-09-21 08:31' AND event_time < '2026-09-21 08:34'
+GROUP BY 1 ORDER BY 1;
+```
 
 ---
 

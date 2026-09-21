@@ -15,7 +15,7 @@ Kafka 에 쌓이는 이벤트를 **흐르는 채로 계산하는 엔진**이다.
 
 | 잡 | 하는 일 | 결과가 가는 곳 |
 |---|---|---|
-| **ott-ads-realtime** | 4개 토픽 합류 → `event_id` 중복제거 → 1분 윈도우 집계 → 캠페인 메타 조인 → 이상 감지 · 지각 분리 | `agg.minute` → redis-writer → Redis / `alert.anomaly` / `late.events` |
+| **ott-ads-realtime** | 4개 토픽 합류 → `event_id` 중복제거 → 1분 윈도우 집계 → 캠페인 메타 조인 → 이상 감지 · 지각 분리 | `agg.minute` → redis-writer → Redis / `alert.anomaly` / `late.events` + Postgres `late_dropped` |
 | **ott-ads-archive** | 5개 토픽을 **가공 없이** 그대로 옮긴다 | MinIO `s3a://events/dt=/hour=/` Parquet ([08-minio-guide.md](08-minio-guide.md)) |
 
 ### 왜 파이썬 컨슈머로 안 하고 Flink 인가
@@ -39,7 +39,7 @@ Kafka 컨슈머 스크립트로도 "읽어서 세기" 는 된다. Flink 가 필�
 | **Available Task Slots** | **0** / Total 2 | 잡 2개가 슬롯을 하나씩 쓰고 있다. **여기서 잡을 하나 더 올리면 에러 없이 대기 상태로 멈춘다.** "잡이 안 뜬다" 는 대개 이것 |
 | Task Managers | 1 | 실제로 연산을 수행하는 워커 컨테이너(`ottads-flink-tm`) 수 |
 | Running Jobs | 2 | `ott-ads-realtime`, `ott-ads-archive` |
-| Tasks `34 34` / `10 10` | 전체 / 실행 중 | 두 숫자가 다르면 일부 연산자가 아직 못 떴거나 재시작 중 |
+| Tasks `29 29` / `10 10` | 전체 / 실행 중 | 두 숫자가 다르면 일부 연산자가 아직 못 떴거나 재시작 중 |
 
 잡 이름을 누르면 잡 상세로 들어간다.
 
@@ -56,43 +56,59 @@ Kafka 컨슈머 스크립트로도 "읽어서 세기" 는 된다. Flink 가 필�
 | `FORWARD` | 같은 서브태스크로 그대로 넘긴다. 네트워크를 안 탄다 | Source → Calc |
 | `HASH` | 키로 다시 나눠 보낸다(셔플). 병렬도가 크면 **네트워크 비용이 여기서 생긴다** | Deduplicate 앞(`event_id` 기준), 윈도우 앞(`campaign_id` 기준) |
 
-박스가 34개나 되는 이유는 `pipeline.operator-chaining = false` 로 **체이닝을 일부러 껐기 때문**이다.
+박스가 29개나 되는 이유는 `pipeline.operator-chaining = false` 로 **체이닝을 일부러 껐기 때문**이다.
 켜면 인접한 FORWARD 연산자가 한 박스로 합쳐져 단계별 건수를 볼 수 없다.
 아래 archive 잡(체이닝 켜짐)과 비교하면 차이가 보인다. 운영에서는 성능을 위해 켠다.
 
 ### 박스와 SQL 대응표 (그래프 아래 표의 Records Received / Records Sent)
 
 ```
-Source: impression_raw   ─┐
-Source: quartile_raw     ─┤
-Source: click_raw        ─┤
-Source: request_raw ─ Calc[10] ─┘   ← WHERE event_type='ad_response' AND fill=TRUE  (필터: in > out)
-                         │
-Calc[12]                 ← UNION ALL 합류 (4개 소스의 합 = in)
-Deduplicate[14]          ← ROW_NUMBER() OVER (PARTITION BY event_id)   in − out = 걸러낸 중복
-Calc[15]
-LocalWindowAggregate[16] ← TUMBLE 1분, 1단계(부분 집계)
-GlobalWindowAggregate[18]← 최종 집계. out = "캠페인 × 분" 행 수
-Calc[19] → LookupJoin[20]← campaigns 테이블에서 광고주/캠페인명 붙이기 (Postgres, 5분 캐시)
-Calc[21] → agg_minute_sink: Writer / Committer   → Kafka agg.minute
-
-LocalWindowAggregate[23] → GlobalWindowAggregate[25] → Calc[26] → LookupJoin[27] → alert_sink
-                         ← 같은 윈도우를 한 번 더 계산해 imp/req 비율이 임계치 밑인 것만 경고
-
-Calc[2]/[4]/[7] → Calc[30]/[32]/[34] → late_events_sink   ← event_time < CURRENT_WATERMARK() 인 것
+Source: impression_raw ─ Calc[2]  ─┐
+Source: quartile_raw   ─ Calc[4]  ─┤
+Source: click_raw      ─ Calc[7]  ─┤
+Source: request_raw    ─ Calc[10] ─┘  ← WHERE event_type='ad_response' AND fill=TRUE  (필터: in > out)
+                                   │
+Deduplicate[13]   ← 4개 입력 합류 + ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY 도착순)
+                    in = 4개 Calc out 의 합,  in − out = 걸러낸 중복
+Calc[14]
+  │
+  ├─ 집계 경로
+  │   Calc[15] → LocalWindowAggregate[16]   ← TUMBLE 1분, 1단계(부분 집계)
+  │            → GlobalWindowAggregate[18]  ← 최종 집계. out = "캠페인 × 분" 행 수
+  │            → Calc[19] ─┬─ LookupJoin[20] → Calc[21] → agg_minute_sink   → Kafka agg.minute
+  │                        │     ← campaigns 테이블에서 광고주/캠페인명 (Postgres, 5분 캐시)
+  │                        └─ Calc[23] → alert_sink                         → Kafka alert.anomaly
+  │                              ← 같은 집계 결과에서 imp/req 비율이 임계치 밑인 것만
+  │
+  └─ 지각 경로
+      Calc[25]  ← 이벤트가 속한 1분 창의 끝(window_end)과 현재 워터마크 계산
+      Calc[26]  ← 워터마크 >= window_end - 1ms 인 것만 = 윈도우가 이미 닫혀 버리는 것
+        ├─ Calc[27] → late_events_sink                  → Kafka late.events   (관찰용)
+        └─ Calc[29] → ConstraintEnforcer → late_dropped_sink → Postgres late_dropped (대사용, event_id upsert)
 ```
+
+**중복제거와 윈도우 집계가 하나씩만 있다.** 세 싱크 경로가 같은 `Deduplicate[13]` 을,
+집계·경고가 같은 `GlobalWindowAggregate[18]` 을 공유한다
+(`table.optimizer.reuse-optimize-block-with-digest-enabled`). 이 설정이 없으면 옵티마이저가 경로마다
+안 쓰는 컬럼을 먼저 잘라 모양이 달라지고, 같은 중복제거가 경로 수만큼 생긴다 (상태가 그만큼 는다).
+
+**지각 판정은 중복제거 뒤, 윈도우와 같은 조건으로 한다.** 윈도우는 "이벤트가 속한 1분 창이 이미 닫혔을 때" 만
+버린다. `event_time < 워터마크` 로 판정하면 창이 아직 열려 있어 실시간에 집계된 것까지 지각으로 세게 된다
+(예: 워터마크 12:00:40 에 12:00:30 이벤트 → 워터마크보다 과거지만 [12:00, 12:01) 창은 열려 있다).
 
 실측 예 — realtime 잡이 이만큼 처리한 시점의 값:
 
 | 박스 | in → out | 뜻 |
 |---|---|---|
-| `Calc[10]` | 78 → 38 | ad.request 중 서버 확정 `ad_response` 만 남았다 |
-| `Calc[12]` | 254 | 49 + 165 + 2 + 38 = 254 (합류) |
-| `Deduplicate[14]` | 254 → 250 | **중복 4건 제거** (부하 중 캡처에서는 1,946 → 1,876 = 70건) |
-| `LocalWindowAggregate[16]` | 250 → 117 | 부분 집계 |
-| `GlobalWindowAggregate[18]` | 117 → 44 | 44 = 캠페인 × 분 |
-| `Calc[26]` (경고 경로) | 44 → 0 | 경고 조건에 걸린 윈도우 없음 |
-| `Calc[30/32/34]` (지각 경로) | … → 0 | 지각 이벤트 없음 |
+| `Calc[10]` | 2,745 → 1,252 | ad.request 중 서버 확정 `ad_response` 만 남았다 |
+| `Deduplicate[13]` | 8,672 → 8,284 | 1,296 + 5,995 + 129 + 1,252 = 8,672 합류, **중복 388건 제거** |
+| `LocalWindowAggregate[16]` | 8,284 → 208 | 부분 집계 |
+| `GlobalWindowAggregate[18]` | 208 → 19 | 19 = 캠페인 × 분 |
+| `Calc[23]` (경고 경로) | 19 → 0 | 경고 조건에 걸린 윈도우 없음 |
+| `Calc[26]` (지각 경로) | 8,284 → 354 | **윈도우가 버린 354건** → late.events 와 late_dropped 에 같은 354건 |
+
+(2026-09-21, 기본 이상 비율로 3분 부하 후 flush 까지 마친 시점. 지각 354건은 impression 외
+quartile·click·request 를 모두 포함한 수다. 대사에 쓰는 건 그중 impression 이다.)
 
 ### 숫자를 읽을 때 속기 쉬운 세 가지
 
@@ -121,7 +137,7 @@ Calc[2]/[4]/[7] → Calc[30]/[32]/[34] → late_events_sink   ← event_time < C
 
 | 탭 | 볼 것 |
 |---|---|
-| **Detail** | 연산자 원문(`[14]:Deduplicate(keep=[FirstRow], key=[event_id], order=[ROWTIME])`)과 누적 건수 |
+| **Detail** | 연산자 원문(`[13]:Deduplicate(keep=[FirstRow], key=[event_id], order=[PROCTIME])`)과 누적 건수 |
 | SubTasks | 병렬 인스턴스별 건수. 병렬도를 올린 뒤 쏠림 확인용 |
 | **Watermarks** | 5절 |
 | **BackPressure** | 6절 |
@@ -217,8 +233,8 @@ Calc[2]/[4]/[7] → Calc[30]/[32]/[34] → late_events_sink   ← event_time < C
 | Redis 집계가 안 나온다 | 윈도우 박스 → **Watermarks** (멈춰 있나) |
 | 대시보드 숫자가 점점 늦어진다 | **BackPressure**, 박스 색, `Busy` |
 | 중복을 몇 건 걸렀나 | `Deduplicate` 의 in − out |
-| 지각 이벤트가 생겼나 | `late_events_sink` 앞 `Calc` 의 out |
-| 경고가 왜 안/왜 나나 | 경고 경로 `Calc[26]` 의 out |
+| 지각 이벤트가 생겼나 | 지각 경로 `Calc[26]` 의 out |
+| 경고가 왜 안/왜 나나 | 경고 경로 `Calc[23]` 의 out |
 | Parquet 파일이 안 생긴다 | archive 잡 → **Checkpoints** 의 Failed |
 | 잡이 계속 재시작한다 | **Exceptions** |
 | 메모리 부족 의심 | **Task Managers** → 메모리 |
@@ -244,7 +260,7 @@ Flink 화면과 플레이어(:3001)를 나란히 띄운다.
 1. 광고 1편을 재생한다 → `Source: impression_raw` 의 Records Sent 가 +1, Watermarks 가 현재 시각으로 따라온다.
 2. [이상 주입] 에서 **중복**을 켜고 1편 더 → `Deduplicate` 의 in − out 이 1 늘어난다.
 3. **SSAI** 를 켜고 1편 더 → in − out 이 **안 는다.** `event_id` 가 서로 달라 Flink 는 못 걸러낸다 → 배치가 정리한다.
-4. **60초 지연**을 켜고 1편 더 → 지각 경로 `Calc[30]` 의 out 이 오른다. `late.events` 로 간 것이다.
+4. **90초 지연**을 켜고 1편 더 → 지각 경로 `Calc[26]` 의 out 이 오른다. `late.events` 와 Postgres `late_dropped` 로 간 것이다.
 5. `bash scripts/scenario_flink_kill.sh` → Exceptions 에 기록, Checkpoints 의 **Restored** 가 1 오르고 잡이 이어서 돈다.
 
 ---

@@ -214,6 +214,7 @@ S1: 20 × 8,640(10초) × 5 = 864,000 개/일   ← 메타데이터만으로 쿼
 | `sql/archive.sql` `auto-compaction` | 없음 | `true` + `compaction.file-size = 128MB` |
 | `sql/archive.sql` 커넥터 | `filesystem` | Iceberg |
 | `OUTBOX_WORKERS` | 1 | 2~4 (조회에 `SKIP LOCKED` 는 이미 적용됨) |
+| `sql/pipeline.sql` `late_dropped_sink` | Postgres JDBC upsert | 지각이 초당 수천 건이면 DB 쓰기 부담 → `late.events` 를 archive 로 Parquet/Iceberg 에 쌓고 대사가 거기서 읽기 |
 | `OutboxWorker.kt` `seen` | 200k 집합 | 제거 (메트릭으로) |
 | `application.yml` Hikari | max 15 | 20~30 + PgBouncer |
 | `spark/batch_settlement.py` | 전체 재계산 + truncate | `dt` 증분 + 파티션 교체 |

@@ -33,7 +33,7 @@
 | 이벤트타임 vs 처리시간 | `event_time` 과 `server_ts` 는 왜 다른가 | Parquet 에서 두 값의 차이를 뽑아 보기 |
 | 워터마크 | "이제 더 안 온다" 를 누가 정하나 | `sql/pipeline.sql` 의 `WATERMARK FOR event_time` |
 | 윈도우 | 1분 텀블링은 언제 닫히나 | 부하를 멈추면 윈도우가 안 닫히는 현상 |
-| 지각 이벤트 | 늦게 온 것은 버리나 남기나 | `late.events` 토픽, 플레이어의 [60초 지연] 주입 |
+| 지각 이벤트 | 늦게 온 것은 버리나 남기나, "늦었다" 의 기준은 무엇인가 | `late.events` 토픽, `late_dropped` 테이블, 플레이어의 [90초 지연] 주입 |
 | 상태와 TTL | 중복제거 상태는 얼마나 커지나 | `table.exec.state.ttl = 1h` 의 의미와 [04](04-scale-100m.md#3-3-flink-실시간-처리) 의 계산 |
 | 체크포인트 | 장애가 나면 어디부터 다시 하나 | `scripts/scenario_flink_kill.sh` |
 
@@ -61,8 +61,9 @@
 `flush-windows.sh` → `batch.sh` → `recon.sh` 를 돌린다.
 `raw_impressions` 와 `impressions` 의 차이가 SSAI 건수와 일치하는가?
 
-**과제 6.** [60초 지연] 을 켜고 같은 절차를 밟는다. 이번엔 **확정이 실시간보다 커진다.**
-대사 표의 `likely_cause` 가 이유를 맞게 짚는가?
+**과제 6.** [90초 지연] 을 켜고 같은 절차를 밟는다. 이번엔 **확정이 실시간보다 커진다.**
+대사 표의 `likely_cause` 가 이유를 맞게 짚는가? 잔차가 0 인가?
+(60초로 바꿔 보면 가끔 지각이 안 된다. 왜 그런지 `sql/pipeline.sql` 5-1 의 판정 조건으로 설명해 볼 것)
 
 ---
 

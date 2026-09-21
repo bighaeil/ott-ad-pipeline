@@ -92,12 +92,13 @@ KINDS = {
                   "실시간 집계가 부풀어 있는 상태이고, ad_request_id 로 묶는 Spark 배치만 이걸 정리한다.",
     },
     "late": {
-        "title": "지연 이벤트 — 60초 과거",
-        "desc": "네트워크 복구 후 밀린 전송. event_time 이 60초 전이다.",
+        "title": "지연 이벤트 — 90초 과거",
+        "desc": "네트워크 복구 후 밀린 전송. event_time 이 90초 전이다.",
         "expect": {"kafka": "ad.impression 1건 + late.events", "redis": "+0 (윈도우 놓침)",
                    "minio": "1행", "pg": "1"},
-        "lesson": "워터마크(10초)를 한참 지나 도착해 실시간 윈도우가 버린다. "
-                  "late.events 토픽에는 남고, event_time 만 보는 배치는 정상 집계한다. "
+        "lesson": "속한 1분 창이 이미 닫힌 뒤 도착해 실시간 윈도우가 버린다. "
+                  "(60초 전이면 창이 아직 열려 있을 수 있어 90초로 둔다) "
+                  "late.events 토픽과 late_dropped 테이블에 남고, event_time 만 보는 배치는 정상 집계한다. "
                   "실시간 < 확정 이 되는 이유가 이것이다.",
     },
     "bad_schema": {
@@ -225,9 +226,9 @@ def send(kind, campaign):
 
     elif kind == "late":
         eid = "evt-trace-" + uuid.uuid4().hex[:12]
-        e = base_event(campaign, eid, ts - 60_000, arid)   # 60초 과거
+        e = base_event(campaign, eid, ts - 90_000, arid)   # 90초 과거 -> 속한 창이 반드시 닫혀 있다
         e["_late"] = True
-        ids.append({"event_id": eid, "role": "60초 지연 임프레션"})
+        ids.append({"event_id": eid, "role": "90초 지연 임프레션"})
         http.append(post_events([e]))
 
     elif kind == "bad_schema":

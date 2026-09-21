@@ -42,6 +42,11 @@ SET 'table.exec.source.idle-timeout' = '__IDLE_TIMEOUT__ s';
 -- 같은 소스를 여러 싱크가 읽으므로 소스 재사용을 켠다 (기본값이지만 명시).
 SET 'table.optimizer.reuse-source-enabled' = 'true';
 
+-- 공통 부분(중복 제거 등)을 싱크들이 하나로 공유하게 한다.
+-- 이게 없으면 옵티마이저가 싱크마다 안 쓰는 컬럼을 먼저 잘라내서 모양이 달라지고,
+-- 같은 중복 제거가 싱크 경로마다 따로 생긴다 (상태가 두 배, 대시보드 계수도 두 배).
+SET 'table.optimizer.reuse-optimize-block-with-digest-enabled' = 'true';
+
 -- ===========================================================================
 -- 1. 소스 테이블
 --    event_time 을 시간 속성으로 삼고 워터마크를 건다.
@@ -165,13 +170,14 @@ CREATE TABLE agg_minute_sink (
     'json.timestamp-format.standard' = 'ISO-8601'
 );
 
--- 워터마크를 지나 도착해 윈도우를 놓친 이벤트.
+-- 윈도우가 이미 닫힌 뒤 도착해 실시간 집계에서 버려진 이벤트 (정의는 7-3 참고).
 CREATE TABLE late_events_sink (
     event_id       STRING,
     event_type     STRING,
     campaign_id    STRING,
     ad_request_id  STRING,
     event_time     TIMESTAMP_LTZ(3),
+    window_end     TIMESTAMP_LTZ(3),
     watermark_at   TIMESTAMP_LTZ(3),
     lateness_ms    BIGINT,
     topic_origin   STRING
@@ -181,6 +187,31 @@ CREATE TABLE late_events_sink (
     'properties.bootstrap.servers' = 'kafka:9092',
     'format' = 'json',
     'json.timestamp-format.standard' = 'ISO-8601'
+);
+
+-- 같은 지각 이벤트를 대사용으로 PostgreSQL 에도 남긴다.
+-- Kafka 쪽(redis-writer 의 late 카운터)은 재처리하면 두 번 세지만,
+-- 여기는 event_id 가 기본키라 같은 이벤트를 몇 번 써도 한 행이다 (upsert).
+-- 그래서 대사(spark/reconcile.py)는 이 테이블로 "실시간이 버린 건수" 를 정확히 센다.
+-- JDBC 커넥터가 TIMESTAMP_LTZ 를 못 받으므로 UTC 기준 TIMESTAMP 로 바꿔 쓴다
+-- (세션 time-zone 이 UTC 라 값이 그대로 UTC 다).
+CREATE TABLE late_dropped_sink (
+    event_id       STRING,
+    kind           STRING,
+    campaign_id    STRING,
+    ad_request_id  STRING,
+    event_time     TIMESTAMP(3),
+    window_end     TIMESTAMP(3),
+    watermark_at   TIMESTAMP(3),
+    PRIMARY KEY (event_id) NOT ENFORCED
+) WITH (
+    'connector' = 'jdbc',
+    'url' = 'jdbc:postgresql://postgres:5432/adplatform',
+    'table-name' = 'late_dropped',
+    'username' = 'ads',
+    'password' = 'ads',
+    'sink.buffer-flush.max-rows' = '500',
+    'sink.buffer-flush.interval' = '1s'
 );
 
 -- 이상 감지 경고.
@@ -263,13 +294,18 @@ WHERE event_type = 'ad_response' AND fill = TRUE AND campaign_id <> 'nofill';
 --    이게 잡는 것   : 생성기의 dup 재전송, Outbox 워커의 재발행
 --    이게 못 잡는 것: SSAI 이중경로 (event_id 가 서로 다르다)
 --    후자는 단계 5의 Spark 가 ad_request_id + source 우선순위로 처리한다.
+--
+--    "먼저 도착한 것" (처리 시간 순) 을 남긴다. event_time 순으로 정렬하면
+--    나중에 더 이른 event_time 이 오면 앞서 낸 결과를 고쳐야 하므로 출력이 수정 스트림이 되고,
+--    추가만 받는 싱크(late.events, 5-1)가 이 뒤에 붙을 수 없다.
+--    중복은 재전송·재발행이라 event_time 이 같으므로 어느 쪽을 남겨도 값은 같다.
 -- ---------------------------------------------------------------------------
 CREATE TEMPORARY VIEW deduped AS
 SELECT event_id, campaign_id, ad_request_id, event_time, kind, is_ssai_twin
 FROM (
     SELECT *,
-           ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY event_time ASC) AS rn
-    FROM all_events
+           ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY pt ASC) AS rn
+    FROM (SELECT *, PROCTIME() AS pt FROM all_events)
 )
 WHERE rn = 1;
 
@@ -288,6 +324,33 @@ SELECT
     CAST(SUM(is_ssai_twin) AS BIGINT)                       AS ssai_dupes
 FROM TABLE(TUMBLE(TABLE deduped, DESCRIPTOR(event_time), INTERVAL '1' MINUTE))
 GROUP BY window_start, window_end, campaign_id;
+
+-- ---------------------------------------------------------------------------
+-- 5-1. 윈도우가 버리는 이벤트 = 지각 이벤트
+--
+--    윈도우 집계(5)는 "그 이벤트가 속한 1분 창이 이미 닫혔으면" 조용히 버린다.
+--    창이 닫혔다 = 워터마크가 창 끝(window_end) - 1ms 에 도달했다.
+--    그래서 지각 판정도 event_time < 워터마크 가 아니라 이 조건이어야 한다.
+--      예) 워터마크 12:00:40 에 event_time 12:00:30 이 도착
+--          event_time < 워터마크 이지만 [12:00, 12:01) 창은 아직 열려 있다 -> 실시간에 집계된다.
+--          예전 판정(event_time < 워터마크)은 이것을 지각으로 셌고, 대사 잔차가 음수로 나왔다.
+--
+--    중복 제거(4) 뒤에서 판정한다. 윈도우가 보는 것과 같은 레코드, 같은 워터마크를 보기 위해서다.
+--    (앞에서 판정하면 중복 재전송도 지각으로 두 번 세고, 워터마크도 윈도우와 다르다)
+--    TUMBLE 을 쓰지 않고 창 끝을 직접 계산한다. TUMBLE 을 쓰면 이 연산자도 지각 이벤트를 버린다.
+-- ---------------------------------------------------------------------------
+--    FLOOR 가 TIMESTAMP_LTZ 를 받지 못해 TIMESTAMP(3) 로 바꿔 계산한다. 세션 time-zone 이 UTC 라
+--    값은 그대로 UTC 이고, window_end / watermark_ts 는 UTC 기준 TIMESTAMP(3) 다.
+CREATE TEMPORARY VIEW late_at_window AS
+SELECT event_id, kind, campaign_id, ad_request_id, event_time, window_end, watermark_ts
+FROM (
+    SELECT *,
+           FLOOR(CAST(event_time AS TIMESTAMP(3)) TO MINUTE) + INTERVAL '1' MINUTE AS window_end,
+           CAST(CURRENT_WATERMARK(event_time) AS TIMESTAMP(3))                     AS watermark_ts
+    FROM deduped
+)
+WHERE watermark_ts IS NOT NULL
+  AND watermark_ts >= window_end - INTERVAL '0.001' SECOND;
 
 -- lookup join 은 처리시간 속성을 요구한다. 집계 결과 위에 한 겹 더 얹어 만든다.
 -- (집계 SELECT 목록에 PROCTIME() 을 직접 넣으면 GROUP BY 규칙에 걸린다)
@@ -333,6 +396,8 @@ FROM agg_1m_enriched;
 
 -- 7-2. 이상 감지: impression/request 비율이 임계치 밑
 --      노필과 별개로, "채우기로 결정했는데 실제로 안 나온" 비율이 떨어지면 경고.
+--      캠페인 메타(광고주·이름)를 쓰지 않으므로 lookup join 전의 agg_1m 을 바로 읽는다.
+--      (조인이 경로마다 하나씩 생기면 campaigns 스캔을 공유하게 되어 lookup join 이 성립하지 않는다)
 INSERT INTO alert_sink
 SELECT
     'low_impression_ratio' AS alert_type,
@@ -341,43 +406,33 @@ SELECT
     window_end,
     impressions,
     requests,
-    imp_req_ratio,
+    CAST(impressions AS DOUBLE) / CAST(requests AS DOUBLE) AS imp_req_ratio,
     CAST(__ALERT_THRESHOLD__ AS DOUBLE) AS threshold,
     'impression/request 비율이 임계치 미만' AS message,
     CURRENT_TIMESTAMP AS detected_at
-FROM agg_1m_enriched
+FROM agg_1m
 WHERE requests >= __ALERT_MIN_REQUESTS__
-  AND imp_req_ratio IS NOT NULL
-  AND imp_req_ratio < __ALERT_THRESHOLD__;
+  AND CAST(impressions AS DOUBLE) / CAST(requests AS DOUBLE) < __ALERT_THRESHOLD__;
 
--- 7-3. 지각 이벤트 -> late.events
---      Flink SQL 윈도우는 늦은 레코드를 조용히 버린다. 사이드 아웃풋이 없으므로
---      CURRENT_WATERMARK() 로 직접 비교해 따로 뽑아낸다.
+-- 7-3. 지각 이벤트 (5-1) -> late.events (관찰용) + late_dropped (대사용)
+--      Flink SQL 윈도우에는 사이드 아웃풋이 없다. 그래서 윈도우가 버리는 조건을
+--      CURRENT_WATERMARK() 로 똑같이 재현해 따로 뽑아낸다.
 INSERT INTO late_events_sink
-SELECT event_id, event_type, campaign_id, ad_request_id, event_time,
-       CURRENT_WATERMARK(event_time) AS watermark_at,
-       TIMESTAMPDIFF(SECOND, event_time, CURRENT_WATERMARK(event_time)) * 1000 AS lateness_ms,
-       'ad.impression' AS topic_origin
-FROM impression_raw
-WHERE CURRENT_WATERMARK(event_time) IS NOT NULL
-  AND event_time < CURRENT_WATERMARK(event_time);
+SELECT event_id,
+       kind AS event_type,
+       campaign_id, ad_request_id, event_time,
+       CAST(window_end AS TIMESTAMP_LTZ(3))   AS window_end,
+       CAST(watermark_ts AS TIMESTAMP_LTZ(3)) AS watermark_at,
+       TIMESTAMPDIFF(SECOND, CAST(event_time AS TIMESTAMP(3)), watermark_ts) * 1000 AS lateness_ms,
+       CASE kind WHEN 'impression' THEN 'ad.impression'
+                 WHEN 'click'      THEN 'ad.click'
+                 WHEN 'request'    THEN 'ad.request'
+                 ELSE 'ad.quartile' END AS topic_origin
+FROM late_at_window;
 
-INSERT INTO late_events_sink
-SELECT event_id, event_type, campaign_id, ad_request_id, event_time,
-       CURRENT_WATERMARK(event_time) AS watermark_at,
-       TIMESTAMPDIFF(SECOND, event_time, CURRENT_WATERMARK(event_time)) * 1000 AS lateness_ms,
-       'ad.quartile' AS topic_origin
-FROM quartile_raw
-WHERE CURRENT_WATERMARK(event_time) IS NOT NULL
-  AND event_time < CURRENT_WATERMARK(event_time);
-
-INSERT INTO late_events_sink
-SELECT event_id, event_type, campaign_id, ad_request_id, event_time,
-       CURRENT_WATERMARK(event_time) AS watermark_at,
-       TIMESTAMPDIFF(SECOND, event_time, CURRENT_WATERMARK(event_time)) * 1000 AS lateness_ms,
-       'ad.click' AS topic_origin
-FROM click_raw
-WHERE CURRENT_WATERMARK(event_time) IS NOT NULL
-  AND event_time < CURRENT_WATERMARK(event_time);
+INSERT INTO late_dropped_sink
+SELECT event_id, kind, campaign_id, ad_request_id,
+       CAST(event_time AS TIMESTAMP(3)), window_end, watermark_ts
+FROM late_at_window;
 
 END;

@@ -289,7 +289,7 @@ make load
 | `[버퍼]` consumer lag | `flink-rt` / `flink-archive` 가 벌어졌다 좁혀진다 |
 | `[처리]` 입력 건/초 | 수집보다 **몇 초 늦게** 따라 올라온다 |
 | `[처리]` 중복제거 | `14,202→13,576` 처럼 in/out 이 벌어진다 = 걷어낸 중복 |
-| `[처리]` late.events | 생성기가 심은 지연 10% 만큼 꾸준히 증가 |
+| `[처리]` late.events | 꾸준히 증가. 생성기가 30~60초 늦게 보내는 10% 중 **속한 창이 이미 닫힌 것만** 센다 |
 | `[처리]` 체크포인트 | 10초마다 1씩 증가, 실패 0 |
 | `[정합성]` 캠페인 표 | imp/req 비율이 0.9 대. **1을 넘는 줄이 있으면 SSAI 열을 볼 것** |
 | `[집계]` 그래프 | 파란 선(실시간)이 분마다 갱신 |
@@ -875,12 +875,16 @@ SQL Client 는 변수 치환을 못 하므로 `scripts/flink-submit.sh` 가 자�
 ```
 ad.impression ─┐
 ad.quartile   ─┤
-ad.click      ─┼─► UNION ALL ─► event_id 중복제거 ─► TUMBLE 1분 ─► campaigns lookup join
-ad.request    ─┘   (all_events)   (상태 TTL 1h)      (agg_1m)      (PostgreSQL)
-   │                                                                     │
-   │ CURRENT_WATERMARK() 비교                                            ├─► agg.minute ─► redis-writer ─► Redis
-   └──────────────────────────► late.events                              └─► alert.anomaly (ratio < 0.5)
+ad.click      ─┼─► UNION ALL ─► event_id 중복제거 ─┬─► TUMBLE 1분 ─┬─► campaigns lookup join ─► agg.minute ─► redis-writer ─► Redis
+ad.request    ─┘   (all_events)   (상태 TTL 1h)     │   (agg_1m)    │   (PostgreSQL)
+                                                    │               └─► alert.anomaly (ratio < 0.5)
+                                                    │
+                                                    └─► 속한 창이 이미 닫혔나? (워터마크 >= window_end - 1ms)
+                                                          ├─► late.events         (관찰용)
+                                                          └─► Postgres late_dropped (대사용, event_id upsert)
 ```
+
+(지각 판정은 6-7 에서 바꾼 현재 모양이다. 처음에는 소스마다 `event_time < 워터마크` 로 판정했다.)
 
 **네 소스를 UNION ALL 로 합친 이유**: 로컬 슬롯이 2개뿐이다. 소스마다 중복제거·윈도우를
 따로 두면 연산자가 4배가 된다. 합쳐 두면 중복제거 1개, 윈도우 1개로 끝난다.
@@ -938,6 +942,8 @@ Spark 는 전체 범위를 보므로 잡는다.
 Flink SQL 윈도우는 늦은 레코드를 **조용히 버린다.** DataStream API 의 사이드 아웃풋 같은
 장치가 SQL 에는 없다. 그래서 `CURRENT_WATERMARK()` 로 직접 비교해 따로 뽑아낸다.
 
+처음 구현은 아래처럼 소스마다 `event_time < 워터마크` 로 판정했다.
+
 ```sql
 INSERT INTO late_events_sink
 SELECT ..., CURRENT_WATERMARK(event_time) AS watermark_at,
@@ -947,7 +953,24 @@ WHERE CURRENT_WATERMARK(event_time) IS NOT NULL
   AND event_time < CURRENT_WATERMARK(event_time);
 ```
 
-실측 (부하 110초, 생성기 지연 주입 10%):
+이 조건은 윈도우가 버리는 조건과 다르다 (창이 아직 열려 있으면 윈도우는 집계한다).
+**지금은 중복제거 뒤에서 "속한 창이 이미 닫혔는가" 로 판정한다** — 이유와 실측은 [6-7](#6-7-잔차를-0-으로--지각을-윈도우-기준으로-다시-판정).
+
+```sql
+-- sql/pipeline.sql 5-1
+CREATE TEMPORARY VIEW late_at_window AS
+SELECT event_id, kind, campaign_id, ad_request_id, event_time, window_end, watermark_ts
+FROM (
+    SELECT *,
+           FLOOR(CAST(event_time AS TIMESTAMP(3)) TO MINUTE) + INTERVAL '1' MINUTE AS window_end,
+           CAST(CURRENT_WATERMARK(event_time) AS TIMESTAMP(3))                     AS watermark_ts
+    FROM deduped
+)
+WHERE watermark_ts IS NOT NULL
+  AND watermark_ts >= window_end - INTERVAL '0.001' SECOND;
+```
+
+아래는 처음 구현 때의 실측이다 (부하 110초, 생성기 지연 주입 10%):
 
 ```
 late.events 1049건
@@ -1049,7 +1072,7 @@ SET 'table.exec.source.idle-timeout' = '5 s';
 ### 5-8. 지금 무엇이 관찰 가능한가
 
 지금까지 0 이던 세 곳이 동시에 움직이기 시작한다. `late.events` 에는 생성기가 심은
-30~60초 지연 이벤트가 `lateness_ms` 와 함께 쌓이고, `alert.anomaly` 에는 impression 이
+30~60초 지연 이벤트 중 창을 놓친 것이 `lateness_ms` 와 함께 쌓이고, `alert.anomaly` 에는 impression 이
 말라붙은 캠페인이 비율과 함께 올라오며, Redis 에는 분단위 집계 해시가 48시간 TTL 을
 달고 생긴다. `observe.sh` 에 Flink 잡 상태와 Redis 키 개수 줄이 추가됐으니 한 화면에서
 같이 볼 수 있다. Flink UI(http://localhost:8181)에서는 8개 태스크가 슬롯 1개에 얹혀
@@ -1152,10 +1175,10 @@ Redis 실시간 합계와 PostgreSQL 확정 집계를 캠페인별로 비교하�
 확정 = 실시간 + 지연반영 − SSAI이중경로 (+ 잔차)
 ```
 
-Redis 는 `redis-writer` 의 `GET /agg/summary?dt=` 로 읽는다 (Spark 컨테이너에 redis
+Redis 는 `redis-writer` 의 `GET /agg/summary?dt=` (구간은 `?from=&to=`) 로 읽는다 (Spark 컨테이너에 redis
 클라이언트를 넣지 않으려고 HTTP 로 뺐다. 대시보드도 같은 엔드포인트를 쓴다).
 
-실측:
+실측 (첫 구현 — 지연반영을 생성기 `_late` 표식으로 셌을 때):
 
 ```
 campaign        실시간      확정     차이      차이율   원인 분해
@@ -1167,9 +1190,10 @@ cmp-1005         61      62      1   1.61%   지연반영 +5 , SSAI이중경로 
 합계            852     859      7   0.81%   지연반영 +68 , SSAI이중경로 -30 , 잔차 -31
 ```
 
-**잔차가 음수인 이유**도 설명된다. `_late` 표식이 붙은 68건 중 31건은 실제로는
+**잔차가 음수인 이유**: `_late` 표식이 붙은 68건 중 31건은 실제로는
 윈도우가 닫히기 전에 도착해 **실시간에도 이미 반영**됐다. 즉 "지연 주입 = 실시간 누락"
 이 아니라, 워터마크와 윈도우 경계의 타이밍에 따라 갈린다.
+이 잔차를 "설명되는 오차" 로 두지 않고 **0 으로 만든 과정이 [6-7](#6-7-잔차를-0-으로--지각을-윈도우-기준으로-다시-판정)** 이다.
 
 결과는 `reconciliation` 테이블에 append 된다 (실행 이력이 쌓인다).
 
@@ -1224,7 +1248,8 @@ flush 후 : 차이율  +0.81%  잔차  -31
 MinIO 콘솔(http://localhost:9001)에서 `events/dt=.../hour=.../` 아래 Parquet 이 체크포인트
 주기에 맞춰 쌓이는 걸 볼 수 있고, `make batch` 를 돌리면 전체 25,266행에서 중복 1,105건이
 접히고 SSAI 이중경로 30건이 정리되는 과정이 단계별로 찍힌다. 그 뒤 `make recon` 이
-실시간 852 vs 확정 859 를 나란히 놓고 "지연반영 +68, SSAI -30, 잔차 -31" 로 쪼갠다.
+실시간 852 vs 확정 859 를 나란히 놓고 "지연반영 +68, SSAI -30, 잔차 -31" 로 쪼갠다
+(이 잔차는 6-7 에서 0 으로 맞췄다).
 
 **여기서 배울 게 하나 있다.** 흔히 "실시간은 대략, 배치가 정답" 이라고 뭉뚱그리는데,
 실제로는 방향이 양쪽이다. 지연 이벤트는 실시간을 **과소** 계상하게 만들고(배치가 더 큼),
@@ -1234,6 +1259,71 @@ SSAI 이중경로와 장기 중복은 실시간을 **과대** 계상하게 만�
 안 되는 이유가 이 표에 그대로 있다.
 
 ---
+
+### 6-7. 잔차를 0 으로 — 지각을 윈도우 기준으로 다시 판정
+
+6-3 의 잔차 −31 은 "설명은 되지만 틀린 숫자" 였다. 지연반영을 생성기의 `_late` 표식으로
+셌는데, 표식이 붙은 이벤트 중 상당수는 **속한 1분 창이 아직 열려 있을 때** 도착해 실시간에도
+들어갔기 때문이다. 원인을 따라가 보니 Flink 쪽 `late.events` 판정도 같은 문제를 갖고 있었다.
+
+```
+워터마크 12:00:40 에 event_time 12:00:30 도착
+  예전 판정 : event_time < 워터마크                 -> 지각 (late.events 로 감)
+  윈도우    : [12:00, 12:01) 창은 12:01:00 에 닫힌다 -> 아직 열려 있으니 집계한다
+```
+
+윈도우가 실제로 버리는 조건은 **"워터마크 >= 창 끝 − 1ms"** 다. 그래서 세 가지를 바꿨다.
+
+| 바꾼 것 | 전 | 후 |
+|---|---|---|
+| 지각 판정 위치 | 소스 3개 각각 (중복제거 전) | **중복제거 뒤** 한 곳 — 윈도우와 같은 레코드, 같은 워터마크 |
+| 지각 판정 조건 | `event_time < CURRENT_WATERMARK()` | `CURRENT_WATERMARK() >= window_end - 1ms` |
+| 지각 기록 | `late.events` (Kafka) | `late.events` + **Postgres `late_dropped`** (`event_id` 기본키 upsert → 재처리해도 한 행) |
+| 대사의 지연반영 | 생성기 `_late` 표식 수 | `late_dropped` 의 impression 수 |
+
+그러면서 두 가지를 더 고쳐야 했다.
+
+- **중복제거를 도착 순서 기준으로.** `ORDER BY event_time` 이면 더 이른 event_time 이 나중에 올 때
+  앞의 결과를 고쳐야 해서 출력이 "수정 스트림" 이 되고, 추가만 받는 Kafka 싱크(`late.events`)를
+  뒤에 붙일 수 없다 (`doesn't support consuming update and delete changes`).
+  중복은 재전송·재발행이라 event_time 이 같으므로 결과는 같다.
+- **공통 부분 공유.** 경로마다 쓰는 컬럼이 달라 옵티마이저가 중복제거를 경로 수만큼 따로 만들었다
+  (상태 2배, 대시보드 중복제거 계수도 2배). `table.optimizer.reuse-optimize-block-with-digest-enabled`
+  로 하나를 공유하게 했고, 그 김에 경고 경로가 조인 없이 집계 결과를 바로 읽게 해서
+  윈도우 집계도 하나가 됐다 (연산자 34 → 29개).
+
+실측 (2026-09-21, 기본 이상 비율로 3분 부하 → flush → batch, 구간 대사):
+
+```
+RECON_FROM=2026-09-21T08:31 RECON_TO=2026-09-21T08:34 bash scripts/recon.sh
+
+campaign   실시간  확정  차이   원인 분해
+cmp-1001     302   290   -12   지연반영 +4 , SSAI이중경로 -16
+cmp-1002     179   180    +1   지연반영 +5 , SSAI이중경로 -4
+cmp-1003     473   477    +4   지연반영 +13 , SSAI이중경로 -9
+cmp-1004     119   119     0   지연반영 +2 , SSAI이중경로 -2
+cmp-1005      80    81    +1   지연반영 +3 , SSAI이중경로 -2
+합계        1153  1147    -6   지연반영 +27 , SSAI이중경로 -33 , 잔차 +0
+```
+
+같은 구간에서 생성기 `_late` 표식이 붙은 impression 은 **69건**, 실시간이 실제로 버린 건 **27건**이다.
+예전 방식이었다면 지연반영을 42건 부풀려 잔차 −42 가 나왔을 것이다.
+
+**구간 대사(`RECON_FROM` / `RECON_TO`, UTC 분 단위).** 같은 날 다른 실행의 데이터가 섞여 있으면
+하루 단위로는 맞춰 볼 수 없어서 넣었다. Redis 는 `/agg/summary?from=&to=`, 확정은
+`minute_settlement`(분 단위, `raw_impressions` 포함), 지각은 `late_dropped` 를 같은 구간으로 자른다.
+**아직 닫히지 않은 창을 구간에 넣으면 잔차가 + 로 나온다** — 처음에 `TO` 를 부하 종료 직후 분까지
+잡았더니 그 한 분에서만 +16 이 나왔고, 대사 표가 "실시간 미확정 창" 으로 정확히 짚었다.
+
+**잔차가 0 이 아니면** 이제 진짜 신호다.
+
+| 잔차 | 뜻 |
+|---|---|
+| + | 실시간에 아직 안 나온 창이 있다 (부하가 멈춰 워터마크 정지 → `flush-windows.sh`), 또는 그 구간에 Flink 잡이 없었다 |
+| − | 실시간이 더 셌다. 중복제거 TTL(1시간)을 넘긴 재전송, 또는 그 구간에 archive 잡이 없어 원본이 없다 |
+
+플레이어·추적기의 지각 주입도 60초 → **90초** 로 바꿨다. 60초 전 이벤트는 주입 시각이 매분 첫 10초 안이면
+속한 창이 아직 열려 있어 약 1/6 확률로 지각이 되지 않는다. 90초면 창 끝이 항상 워터마크보다 20초 이상 앞이다.
 
 ## 7. 단계 6 — 관찰 대시보드
 
@@ -1324,7 +1414,7 @@ SET 'pipeline.operator-chaining' = 'false';   -- FLINK_OPERATOR_CHAINING 으로 
 `make load` 를 걸어 두고 대시보드를 보면, 수집 카운터가 초당 400건대로 올라가는 것과
 거의 동시에 Kafka 토픽 막대가 자라고, 그 뒤를 Flink 입력 건/초가 따라오며,
 중복제거 칸의 `16,662→16,001` 이 벌어지는 것이 보인다. `late.events` 는 생성기가 심은
-지연 비율만큼 꾸준히 증가하고, 체크포인트는 10초마다 하나씩 늘어난다.
+지연 이벤트 중 창을 놓친 만큼 꾸준히 증가하고, 체크포인트는 10초마다 하나씩 늘어난다.
 
 정합성 패널에서 `cmp-1005` 의 imp/req 비율이 **1.008** 로 1을 넘는 순간이 있는데,
 이게 SSAI 이중경로가 실시간 집계를 부풀린 흔적이다. 같은 행의 SSAI 열이 그 원인을 가리킨다.
@@ -1356,7 +1446,7 @@ SET 'pipeline.operator-chaining' = 'false';   -- FLINK_OPERATOR_CHAINING 으로 
 | 정상 임프레션 1건 | 기준선. 다섯 단계를 전부 통과한다 |
 | **중복 — 같은 event_id 2번** | Kafka 2건 → **Redis +1** (Flink 가 접음) |
 | **SSAI 이중경로 — event_id 다름** | Kafka 2건 → **Redis +2** (못 접음!) |
-| 지연 이벤트 — 60초 과거 | `late.events` 로 빠지고 실시간 집계에는 +0 |
+| 지연 이벤트 — 90초 과거 | `late.events` 로 빠지고 실시간 집계에는 +0 |
 | 스키마 위반 — campaign_id 누락 | `dlq.invalid` 로. 응답은 202 |
 | 서명 위조 트래킹 픽셀 | `dlq.invalid` 로. 응답은 200 + 1x1 GIF |
 | 광고 요청 — Outbox 경로 | Collector 를 안 거치고 DB → 워커 → Kafka |
@@ -1410,7 +1500,7 @@ OTT 앱의 재생 화면에 준하는 UI 를 띄우고 거기서 일어나는 �
 | 재생 화면 | 16:9 스테이지, 타임라인에 광고 브레이크 마커, 배속(1x/10x/60x/180x), [다음 광고 브레이크로] |
 | **광고 오버레이** | 광고주 · 캠페인명 · 카피 · CTA 버튼 · 건너뛰기 카운트다운, 하단에 `campaign_id` / `creative_id` / 업종 / CPM / 결정 지연 / `ad_request_id` |
 | 이벤트 로그 | 방금 보낸 이벤트마다 **어느 토픽으로 갔는지 / 배치인지 픽셀인지 / HTTP 응답** |
-| 이상 주입 | 중복 재전송, SSAI 이중경로, 60초 지연, 스키마 위반, 서명 위조 픽셀, 픽셀 전송 on/off |
+| 이상 주입 | 중복 재전송, SSAI 이중경로, 90초 지연, 스키마 위반, 서명 위조 픽셀, 픽셀 전송 on/off |
 | 데이터 확인 | 방금 그 광고 1편이 Kafka → Redis → MinIO → PostgreSQL 어디까지 갔는지 |
 
 ### 주소 (해시 라우팅)
@@ -1569,7 +1659,7 @@ FAIL-OPEN fallback file append: total=7500 file=/data/fallback/fallback-20260912
 
 ### 8-3. `scenario_flink_kill.sh` — TaskManager kill → 체크포인트 복구
 
-**실측**
+**실측** (2026-09-12. 당시 realtime 잡은 태스크 34개였다. 지금은 29개 — 6-7)
 
 ```
 kill 직전       ott-ads-realtime RUNNING    tasks 34/34  체크포인트 완료 40 실패 0

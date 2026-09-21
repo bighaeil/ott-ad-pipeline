@@ -283,7 +283,7 @@
         <label class="chk"><input type="checkbox" id="in_ssai">
           <b>SSAI 이중경로<span>같은 광고를 서버 경로로 한 번 더. event_id 가 달라 실시간은 +2 로 부푼다. 배치만 정리한다.</span></b></label>
         <label class="chk"><input type="checkbox" id="in_late">
-          <b>60초 지연 임프레션<span>워터마크(10초)를 넘겨 도착. 실시간 윈도우는 버리고 late.events 로 간다. 배치는 센다.</span></b></label>
+          <b>90초 지연 임프레션<span>속한 1분 창이 닫힌 뒤 도착. 실시간 윈도우는 버리고 late.events 로 간다. 배치는 센다.</span></b></label>
         <label class="chk"><input type="checkbox" id="in_bad">
           <b>스키마 위반<span>campaign_id 를 뺀다. Collector 검증에서 걸려 dlq.invalid 로. 응답은 그래도 202.</span></b></label>
         <label class="chk"><input type="checkbox" id="in_forge">
@@ -633,7 +633,7 @@ async function runAd(podId, slot, podSize, playhead){
 
   // 3) 임프레션 (+ 이상 주입)
   const imp = {event_type:'impression', ...common};
-  if (inj.late) imp.event_time = Date.now() - 60000;   // 워터마크를 넘긴 지각 이벤트
+  if (inj.late) imp.event_time = Date.now() - 90000;   // 속한 창이 이미 닫힌 지각 이벤트 (60초면 창이 열려 있을 수 있다)
   if (inj.bad) delete imp.campaign_id;                 // 스키마 위반 -> dlq.invalid
   const sent = emit(imp);
   S.counts.imp++;

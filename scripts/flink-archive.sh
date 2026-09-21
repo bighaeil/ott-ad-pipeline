@@ -25,8 +25,14 @@ sed -e "s/__STARTUP_MODE__/${STARTUP}/g" \
     sql/archive.sql > data/flink/archive.rendered.sql
 
 echo "[flink-archive] startup=${STARTUP} rollover='${ROLLOVER}' idle=${IDLE}s"
-docker compose exec -T jobmanager /opt/flink/bin/sql-client.sh -f /data/flink/archive.rendered.sql
-rc=$?
+# SQL Client 는 문장이 실패해도 종료 코드 0 을 돌려준다. 출력의 [ERROR] 로 판정한다.
+LOG=data/flink/archive.submit.log
+docker compose exec -T jobmanager /opt/flink/bin/sql-client.sh -f /data/flink/archive.rendered.sql 2>&1 | tee "$LOG"
+rc=${PIPESTATUS[0]}
+if [[ $rc -eq 0 ]] && grep -q "\[ERROR\]" "$LOG"; then
+  echo "[flink-archive] 실패 - 위 [ERROR] 를 확인할 것."
+  rc=1
+fi
 
 echo
 curl -fsS http://localhost:8181/jobs/overview 2>/dev/null | python -c "

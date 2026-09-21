@@ -33,6 +33,12 @@ sed -e "s/__WATERMARK_DELAY__/${WM}/g" \
 echo "[flink-submit] watermark=${WM}s idle=${IDLE}s startup=${STARTUP} threshold=${THRESHOLD} min_requests=${MIN_REQ}"
 echo "[flink-submit] 렌더된 SQL: data/flink/pipeline.rendered.sql"
 
+# 대사용 테이블(late_dropped). 새 볼륨이면 init 스크립트가 만들지만, 기존 볼륨에는 없으므로 여기서 맞춘다.
+if ! docker compose exec -T postgres psql -U ads -d adplatform -q -v ON_ERROR_STOP=1      < postgres/init/02-late-dropped.sql >/dev/null; then
+  echo "[flink-submit] late_dropped 테이블 준비 실패 - postgres 가 떠 있는지 확인할 것."
+  exit 1
+fi
+
 # 이미 같은 이름의 잡이 돌고 있으면 먼저 알려 준다.
 RUNNING=$(curl -fsS http://localhost:8181/jobs/overview 2>/dev/null \
           | tr ',' '\n' | grep -c '"state":"RUNNING"' || true)
@@ -41,8 +47,13 @@ if [[ "${RUNNING:-0}" -gt 0 ]]; then
   echo "               bash scripts/flink-cancel.sh"
 fi
 
-docker compose exec -T jobmanager /opt/flink/bin/sql-client.sh -f /data/flink/pipeline.rendered.sql
-rc=$?
+# SQL Client 는 문장이 실패해도 종료 코드 0 을 돌려준다. 출력의 [ERROR] 로 판정한다.
+LOG=data/flink/pipeline.submit.log
+docker compose exec -T jobmanager /opt/flink/bin/sql-client.sh -f /data/flink/pipeline.rendered.sql 2>&1 | tee "$LOG"
+rc=${PIPESTATUS[0]}
+if [[ $rc -eq 0 ]] && grep -q "\[ERROR\]" "$LOG"; then
+  rc=1
+fi
 
 echo
 if [[ $rc -eq 0 ]]; then

@@ -119,10 +119,16 @@ class Api(BaseHTTPRequestHandler):
 
             if u.path == "/agg/summary":
                 # 대사(reconciliation) 잡과 대시보드가 읽는다.
+                #   ?dt=YYYY-MM-DD                 하루 (UTC)
+                #   ?from=<epoch>&to=<epoch>       구간 [from, to) — 분 경계로 맞춰 준다
                 dt = (q.get("dt") or [datetime.now(timezone.utc).strftime("%Y-%m-%d")])[0]
-                d0 = datetime.strptime(dt, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                start = int(d0.timestamp())
-                end = start + 86400 - 1
+                if q.get("from") and q.get("to"):
+                    start = int(q["from"][0]) // 60 * 60
+                    end = int(q["to"][0]) // 60 * 60 - 1
+                else:
+                    d0 = datetime.strptime(dt, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    start = int(d0.timestamp())
+                    end = start + 86400 - 1
                 r = _r()
                 return self._json({
                     "dt": dt,
