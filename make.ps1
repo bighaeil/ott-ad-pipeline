@@ -48,6 +48,7 @@ switch ($Target.ToLower()) {
         Write-Host "  dash      대시보드 열기 (http://localhost:8088)"
         Write-Host "  trace     이벤트 추적기 열기 (http://localhost:3000)"
         Write-Host "  play      플레이어 화면 열기 (http://localhost:3001)"
+        Write-Host "  check     로컬 검사 (문서 링크/문법/줄바꿈/BOM/Compose)"
         Write-Host "  e2e       E2E 테스트 (기동 -> 이벤트 주입 -> 배치/대사 -> 검사, 약 7분)"
         Write-Host "  observe   토픽/카운터 실시간 관찰 (Ctrl+C 종료)"
         Write-Host "  flink     Flink SQL 파이프라인 제출"
@@ -114,6 +115,7 @@ switch ($Target.ToLower()) {
     "trace"   { Write-Host "  http://localhost:3000"; Start-Process "http://localhost:3000" }
     "play"    { Write-Host "  http://localhost:3001"; Start-Process "http://localhost:3001" }
     "observe" { Invoke-Sh "scripts/observe.sh" }
+    "check"   { Invoke-Sh "scripts/check.sh" }
     "e2e"     { Invoke-Sh "scripts/e2e.sh" }
     "flink"   { Invoke-Sh "scripts/flink-submit.sh" }
     "flink-cancel" { Invoke-Sh "scripts/flink-cancel.sh" }

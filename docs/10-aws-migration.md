@@ -48,7 +48,7 @@ Collector, Flink 소스, 추적기의 Kafka 스캔, redis-writer 를 모두 다�
 | **dashboard** (FastAPI) | ECS (내부 ALB + 사내 인증) 또는 **Managed Grafana** 로 교체 | 운영에서는 Grafana + Prometheus 가 표준. 이 대시보드는 관찰용 데모 |
 | **player / tracer / generator** | 운영에 올리지 않는다 | 스테이징에서만. generator 는 부하 시험용 ECS 태스크로 |
 | `.env` | **Secrets Manager** + SSM Parameter Store | HMAC 키·DB 비밀번호는 Secrets Manager (교체 주기), 나머지는 Parameter Store |
-| `make` / 수동 배포 | **GitHub Actions (OIDC) → ECR → ECS**, IaC 는 Terraform 또는 CDK | 지금 CI 에 배포 단계만 붙인다 |
+| `make` / 수동 배포 | **배포 파이프라인 (예: GitHub Actions OIDC 또는 CodePipeline) → ECR → ECS**, IaC 는 Terraform 또는 CDK | 지금 저장소에는 CI 가 없으니 새로 만든다. 로컬의 `make check`·`make e2e` 를 단계로 옮긴다 |
 
 ---
 
@@ -274,7 +274,7 @@ flowchart LR
 | ALB 가 픽셀 응답을 느리게 | 플레이어 재시도 폭주 | collector 는 항상 즉시 200 + GIF (지금 계약 유지), ALB 헬스 체크는 별도 경로 |
 | SQL 변경 후 스냅샷 복구 실패 | 잡이 스냅샷에서 못 뜸 | 새 상태로 시작 + 공백 구간 구간 대사, 또는 연산자 UID 고정 |
 | 비밀값을 이미지에 굽기 | 이미지 유출 = 키 유출 | Secrets Manager 주입만. `.env.example` 은 로컬 전용 |
-| 컨테이너 사용자와 볼륨 권한 | 비 root 컨테이너가 마운트 경로에 못 씀 | 이 저장소의 CI 에서 실제로 겪었다 (Linux 에서 Flink 체크포인트 폴더 생성 실패 → `data-init`). ECS 에서 EFS 등을 붙일 때는 접근 포인트의 uid/gid 를 컨테이너 사용자에 맞춘다 |
+| 컨테이너 사용자와 볼륨 권한 | 비 root 컨테이너가 마운트 경로에 못 씀 | 이 저장소를 Linux 에서 돌릴 때 실제로 겪었다 (Linux 에서 Flink 체크포인트 폴더 생성 실패 → `data-init`). ECS 에서 EFS 등을 붙일 때는 접근 포인트의 uid/gid 를 컨테이너 사용자에 맞춘다 |
 
 ---
 
@@ -289,7 +289,7 @@ flowchart LR
 | `redis-writer/writer.py`, `dashboard/api.py` | Kafka IAM 속성 |
 | `postgres/init/*.sql` + 배치의 `ALTER` | 마이그레이션 도구로 이관 |
 | `docker-compose.yml` | 로컬 개발용으로 남긴다. 운영 정의는 IaC (Terraform/CDK) |
-| `.github/workflows/` | ECR 푸시·ECS 배포·스테이징 E2E 잡 추가 (OIDC 로 AWS 인증) |
+| (신규) 배포 파이프라인 | ECR 푸시·ECS 배포·스테이징 E2E (OIDC 로 AWS 인증) |
 
 바꾸지 않는 것: 이벤트 스키마, 토픽 이름·키, Flink SQL 의 로직, 배치·대사 로직, Outbox, 멱등 처리.
 **로컬에서 관찰한 성질(중복·지각·SSAI·Outbox 재발행)은 AWS 에서도 그대로 나타난다.**

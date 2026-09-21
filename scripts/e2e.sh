@@ -3,7 +3,7 @@
 # E2E 테스트 — 전체 스택을 띄우고 이벤트를 넣어 수집부터 대사까지 정확한 숫자로 확인한다.
 #
 #   bash scripts/e2e.sh                 # 약 7~8분 (이미지가 빌드돼 있을 때)
-#   E2E_DOWN=1 bash scripts/e2e.sh      # 끝나면 스택을 내린다 (CI)
+#   E2E_DOWN=1 bash scripts/e2e.sh      # 끝나면 스택을 내린다
 #
 # 순서
 #   1. 기동 + 헬스          docker compose up, scripts/health.sh

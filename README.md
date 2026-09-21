@@ -1,7 +1,5 @@
 # OTT 광고 이벤트 수집·집계 파이프라인 (로컬)
 
-[![CI](https://github.com/bighaeil/ott-ad-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/bighaeil/ott-ad-pipeline/actions/workflows/ci.yml)
-
 수집부터 정산 집계까지 전 구간을 로컬 Docker 에 올려, 아키텍처가 실제로 어떻게
 움직이는지 관찰하기 위한 환경이다. 학습 예제가 아니라 **관찰 장치**가 목적이므로
 지연·중복·유실·정합성 어긋남이 일부러 발생하도록 만들어져 있다.
@@ -1876,7 +1874,7 @@ docker-compose.scale.yml   Collector 스케일 아웃 전용 오버레이 (시�
 .env.example               로컬 축소 설정 견본 (.env 로 복사해서 사용, .env 는 커밋 안 함)
 Makefile / make.ps1        조작 진입점 (make 없는 Windows 용 래퍼 포함)
 scripts/capture/           문서 스크린샷(docs/img) 재촬영 스크립트 + 상황별 순서
-.github/workflows/          CI — ci.yml(push/PR: 문서 링크·문법·줄바꿈·이미지 빌드), links.yml(주 1회 외부 링크)
+scripts/check.sh           로컬 검사 (make check) — 문서 링크·문법·줄바꿈·BOM·Compose 설정
 scripts/ci/check_docs.py   Markdown 상대 링크·이미지·앵커 검사 (로컬에서도 실행 가능)
 scripts/e2e.sh             E2E 테스트 진입점 (make e2e)
 tests/e2e/                 E2E 검사 스크립트 — 넣는 이벤트와 기대값이 파일 맨 위에 있다
@@ -1918,10 +1916,15 @@ data/                      공유 볼륨 (fallback, checkpoints, minio, 렌더�
 Spark 는 `make batch` / `make recon` 때만 뜨고 최대 2 GiB 를 더 쓴다.
 생성기도 `make load` 때만 뜬다 (최대 768 MiB). 8GB 예산 안에 들어간다.
 
-## 12. CI
+## 12. 로컬 검사 (`make check`)
 
-push 와 PR 마다 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 이 돈다.
-전체 스택을 띄우는 E2E 는 아니고, **"깨진 채로 올라가는 것"** 을 막는 검사다.
+```bash
+make check                        # 또는 bash scripts/check.sh   (1분 안)
+CHECK_BUILD=1 make check          # 이미지 9개 빌드까지
+```
+
+전체 스택을 띄우는 E2E 는 아니고, 커밋 전에 **"깨진 채로 올라가는 것"** 을 막는 검사다.
+처음에는 GitHub Actions 로 push 마다 돌렸지만, 이 저장소에는 필요 없어 워크플로를 지우고 같은 검사를 로컬 스크립트로 옮겼다.
 
 | 검사 | 막으려는 것 | 실제로 겪은 일 |
 |---|---|---|
@@ -1931,18 +1934,11 @@ push 와 PR 마다 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 이 �
 | 줄바꿈 LF | Windows 에서 CRLF 가 섞여 컨테이너 안 셸이 깨짐 | 파일 20개가 CRLF 로 저장됨 |
 | `make.ps1` BOM + PowerShell 문법 | BOM 이 빠지면 PowerShell 5.1 에서 한글이 깨져 실패 | `The term '??' is not recognized` |
 | Compose 설정 (`.env` 없이) | `.env` 에만 있던 값에 기대는 설정 | 프로젝트 이름이 `.env` 에만 있었음 |
-| 이미지 9개 빌드 | Kotlin 컴파일 오류, 고정해 둔 커넥터 JAR 주소가 사라짐 | — |
+| 이미지 9개 빌드 (`CHECK_BUILD=1`) | Kotlin 컴파일 오류, 고정해 둔 커넥터 JAR 주소가 사라짐 | — |
 
-전체 스택을 띄우는 E2E 는 [`e2e.yml`](.github/workflows/e2e.yml) 이 따로 돈다 (13절).
-
-외부 링크는 [`links.yml`](.github/workflows/links.yml) 이 **주 1회**(월 09:00 KST)와 수동 실행으로 검사한다.
-외부 사이트가 잠깐 막혀도 PR 이 빨갛게 되지 않도록 분리했다. 끊긴 원문은 archive.org 사본으로 바꾼다.
-
-로컬에서 같은 문서 검사를 돌리려면:
-
-```bash
-python scripts/ci/check_docs.py
-```
+pyflakes 는 `ruff` 가 설치돼 있을 때만 돈다 (`pip install ruff==0.6.9`). 없으면 SKIP 으로 표시한다.
+전체 스택 검증은 E2E (13절). 외부 링크(학습 자료 등)는 자동 검사하지 않으니 가끔 직접 확인한다 —
+끊긴 원문은 archive.org 사본으로 바꾼다 (docs/05 참고).
 
 ## 13. E2E 테스트
 
@@ -1989,10 +1985,7 @@ E2E_DOWN=1 make e2e      # 끝나면 스택을 내린다
 
 검사 스크립트는 `tracer` 컨테이너 안에서 돈다 (Kafka·Redis·Postgres·MinIO 클라이언트가 이미 있어 호스트에 설치할 게 없다).
 로그는 `data/e2e/` 에 남는다 (`state.json` = 넣은 이벤트 목록, `recon.log`, `batch.log` 등).
-CI 에서는 [`e2e.yml`](.github/workflows/e2e.yml) 이 코드가 바뀐 push 와 매주 월요일에 돌리고, 실패하면 컨테이너 로그를 아티팩트로 올린다.
-실패하면 진행 로그 끝부분을 **실행 요약의 annotation** 으로도 올린다 (로그 화면은 로그인해야 보이지만 요약은 바로 보인다).
-
-**CI 가 첫 실행에서 실제 버그를 찾았다.** Linux 러너에서 Flink 잡 제출이
+**Linux 에서 돌렸을 때 실제 버그가 나왔다.** 한때 GitHub Actions(Linux 러너)로 E2E 를 돌렸는데, 첫 실행에서 Flink 잡 제출이
 `Failed to create directory for shared state: file:/data/checkpoints/...` 로 실패했다.
 `./data` 바인드 마운트에 Flink(uid 9999)·collector(uid 100)가 쓰는데, Linux 에서는 호스트 폴더 소유자와
 uid 가 달라 쓰기가 막힌다. Windows·macOS 의 Docker Desktop 은 권한을 느슨하게 다뤄서 로컬에서는 한 번도 드러나지 않았다.

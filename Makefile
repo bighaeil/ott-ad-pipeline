@@ -11,7 +11,7 @@ export MSYS2_ARG_CONV_EXCL := *
 DC := docker compose
 
 .DEFAULT_GOAL := help
-.PHONY: help up down restart clean ps logs health topics consume dash observe smoke flink flink-cancel archive flush load batch recon scenario-live scenario-kafka-down scenario-flink-kill scenario-burst scenario-tamper psql redis-cli e2e
+.PHONY: help up down restart clean ps logs health topics consume dash observe smoke flink flink-cancel archive flush load batch recon scenario-live scenario-kafka-down scenario-flink-kill scenario-burst scenario-tamper psql redis-cli e2e check
 
 help: ## 사용 가능한 타깃
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS=":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -19,6 +19,9 @@ help: ## 사용 가능한 타깃
 .env: ## (.env 가 없을 때만) .env.example 을 복사
 	cp .env.example .env
 	@echo ".env 를 .env.example 에서 만들었습니다."
+
+check: ## 로컬 검사 (문서 링크·문법·줄바꿈·BOM·Compose, 1분 안)
+	bash scripts/check.sh
 
 e2e: .env ## E2E 테스트 (기동 -> 이벤트 주입 -> 배치·대사 -> 26개 검사, 약 7분)
 	bash scripts/e2e.sh
