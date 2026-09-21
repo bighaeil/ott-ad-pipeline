@@ -300,7 +300,8 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
 
 1. **Kafka 공식 문서 Design 장** — https://kafka.apache.org/documentation/#design
    로그 구조, 복제, 전달 보장이 원전 그대로. 20분이면 읽는다.
-2. **Jay Kreps, "The Log"** — https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying
+2. **Jay Kreps, "The Log"** — https://web.archive.org/web/20250105192530/https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying
+   (LinkedIn 원문 페이지는 삭제되어 404 다. 인터넷 아카이브 사본. 같은 글을 확장한 책이 『I ♥ Logs』(O'Reilly, 2014))
    왜 로그가 데이터 시스템의 중심인가. Kafka 의 설계 철학 자체.
 3. **『데이터 중심 애플리케이션 설계』 (Martin Kleppmann)** 11장 스트림 처리
    Kafka 만이 아니라 "이벤트 로그" 라는 개념 전체를 정리해 준다. 이 프로젝트의 배경 지식 대부분이 여기 있다.
